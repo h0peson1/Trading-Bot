@@ -1,0 +1,4 @@
+yfinance>=0.2.30
+pandas>=2.0.0
+requests>=2.31.0
+feedparser>=6.0.10

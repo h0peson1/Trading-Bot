@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+.env
+venv/
+env/
+backtest_results.csv
+fvg_retest_results.csv
+gold_1000_macro_results.csv
