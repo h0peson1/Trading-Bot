@@ -5,9 +5,15 @@ Sends real-time formatted HTML alerts to Telegram. Does **not** execute trades.
 
 ---
 
-## 📊 Configured Pairs & Timeframes
-- **Pairs:** BTCUSD (`BTC-USD`), XAUUSD (`GC=F`), GBPUSD, USDCHF, GBPAUD, EURJPY
-- **Timeframes:** 15m, 1h, 4h, 1d (Note: `yfinance` does not support `2h`)
+## 📊 Multi-Timeframe Strategy Architecture
+- **Higher Timeframe (HTF): 4H (4-Hour Candle Close)**
+  - Tracks higher-timeframe trend bias, 50 EMA, market structure, sweeps, and 4H Fair Value Gaps (FVGs).
+  - Automatically compiles and dispatches a comprehensive multi-pair market update after every 4-hour candle close (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC).
+- **Execution Timeframe (LTF): 15m (15-Minute Entries)**
+  - Continuously scans 15m candles in real-time.
+  - Takes institutional entries: 15m Sweep ➔ Displacement ➔ Engulfing / 50% FVG Retest.
+  - Cross-checks entries against 4H bias to flag `🔥 High Confluence (4H + 15M Aligned)` setups.
+  - Sends immediate trade alerts with Entry, Stop Loss, TP1 (1:1.5R scale 50%), and TP2 (1:2.5R).
 
 ---
 
@@ -15,9 +21,9 @@ Sends real-time formatted HTML alerts to Telegram. Does **not** execute trades.
 
 ### 1. Telegram Bot Setup
 1. Create a bot with [@BotFather](https://t.me/BotFather) on Telegram and copy your API Token.
-2. Open Telegram and send `/start` or any message (e.g. `hello`) to your new bot.
-3. Find your numeric Telegram Chat ID using [@userinfobot](https://t.me/userinfobot) or open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in your browser.
-4. Open [config.py](config.py) and update:
+2. Open Telegram and send `/start` or any message to your new bot.
+3. Find your numeric Telegram Chat ID using [@userinfobot](https://t.me/userinfobot).
+4. In [config.py](config.py), set:
    ```python
    TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
    TELEGRAM_CHAT_ID = "YOUR_NUMERIC_CHAT_ID"
@@ -28,14 +34,13 @@ Test your Telegram setup directly from the command line:
 ```bash
 python signal_bot.py --test
 ```
-You should receive an instant confirmation message in your Telegram chat!
 
 ### 3. Run the Bot & Mobile Controller
 - **Run the full interactive bot:**
   ```bash
   python signal_bot.py
   ```
-  *(Runs the continuous 5-minute scanner AND gives you interactive tap buttons in Telegram to backtest on-demand!)*
+  *(Sends the 4H market update after every 4H candle close, monitors 15m candles for entry triggers, and maintains persistent phone buttons!)*
 
 ---
 

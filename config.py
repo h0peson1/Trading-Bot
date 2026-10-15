@@ -15,18 +15,23 @@ SYMBOLS = {
     "EURJPY": "EURJPY=X",
 }
 
-# Timeframes to scan
-# Note: yfinance supports: 15m, 30m, 1h, 4h, 1d (2h is NOT supported by yfinance)
-TIMEFRAMES = ["15m", "1h", "4h", "1d"]
+# Timeframe Strategy:
+# 4H: Higher Timeframe (HTF) market structure, trend bias, and 4-hour candle close updates
+# 15m: Lower Timeframe (LTF) execution for taking trade entries
+HTF_TIMEFRAME = "4h"
+ENTRY_TIMEFRAME = "15m"
+TIMEFRAMES = ["15m", "4h"]
 
-# How many candles to look back for liquidity sweeps
+# Update & Polling schedules
+# UPDATE_INTERVAL_HOURS: Sends comprehensive market report after every 4H candle close
+UPDATE_INTERVAL_HOURS = 4
+# SCAN_INTERVAL: Frequency in seconds to check for new closed 15m candles (60s = 1 min)
+SCAN_INTERVAL = 60
+CHECK_INTERVAL = SCAN_INTERVAL
+
+# Strategy lookback & risk-reward settings
 LOOKBACK_CANDLES = 60
-
-# Risk-reward ratio shown in signals
 RISK_REWARD = 3.0
-
-# Check interval in seconds (300 = every 5 minutes)
-CHECK_INTERVAL = 300
 
 # Displacement rules
 MIN_BODY_RATIO = 0.70          # Body must be at least 70% of candle range
