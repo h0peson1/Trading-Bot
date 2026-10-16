@@ -62,3 +62,6 @@ SCALE_TP1_RATIO = 0.65             # Bank 65% of position at TP1
 # Telegram notification preferences
 SEND_4H_BRIEFING = False           # Set True only if 4H market structure updates are desired (default False for signal-only)
 SIGNAL_PREFIX = "📊 Axiory Price Action Alert"
+
+# Optional Gemini API Key for open-ended conversational AI chat (free from https://aistudio.google.com/)
+GEMINI_API_KEY = None

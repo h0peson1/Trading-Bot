@@ -30,6 +30,7 @@ import pandas as pd
 import requests
 import config
 import fundamentals
+import bot_chat
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -806,6 +807,10 @@ def handle_telegram_updates():
                     if "message" in item:
                         msg = item["message"]
                         text = msg.get("text", "").strip()
+                        if not text:
+                            continue
+
+                        sender_name = msg.get("from", {}).get("first_name") or msg.get("chat", {}).get("first_name", "trader")
                         cmd = text.lower()
 
                         if "scan" in cmd:
@@ -835,6 +840,11 @@ def handle_telegram_updates():
 
                         elif cmd in ["/start", "/menu", "menu", "help"]:
                             send_startup_banner()
+
+                        else:
+                            # Natural conversation, friendly greetings & trader banter
+                            reply = bot_chat.get_chat_response(text, user_name=sender_name)
+                            send_telegram(reply, with_keyboard=True)
 
         except Exception:
             time.sleep(2)
