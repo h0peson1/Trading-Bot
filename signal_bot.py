@@ -20,7 +20,9 @@ Architecture:
   * Persistent phone buttons for scans, market structure, active Fib zones, and bot status.
 """
 
+import os
 import sys
+import json
 import time
 import threading
 import argparse
@@ -80,6 +82,66 @@ def get_current_4h_slot_key() -> str:
 # ---------------------------------------------------------------------------
 # Telegram API Helpers with Persistent Phone Keyboard
 # ---------------------------------------------------------------------------
+SUBSCRIBERS_FILE = "subscribers.json"
+
+
+def is_admin(chat_id: Any) -> bool:
+    """Checks whether the given chat_id belongs to the bot administrator."""
+    admin_id = str(getattr(config, "ADMIN_CHAT_ID", getattr(config, "TELEGRAM_CHAT_ID", ""))).strip()
+    return str(chat_id).strip() == admin_id
+
+
+def load_subscribers() -> set:
+    """Load persistent set of subscriber chat IDs from file."""
+    subs = set()
+    admin_id = str(getattr(config, "ADMIN_CHAT_ID", getattr(config, "TELEGRAM_CHAT_ID", ""))).strip()
+    if admin_id:
+        subs.add(admin_id)
+    try:
+        if os.path.exists(SUBSCRIBERS_FILE):
+            with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for cid in data:
+                        if cid:
+                            subs.add(str(cid).strip())
+    except Exception as e:
+        print(f"[Subscriber Load Error]: {e}")
+    return subs
+
+
+def save_subscriber(chat_id: Any):
+    """Register a new subscriber account to receive trade signals."""
+    if not chat_id:
+        return
+    cid_str = str(chat_id).strip()
+    subs = load_subscribers()
+    if cid_str not in subs:
+        subs.add(cid_str)
+        try:
+            with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
+                json.dump(list(subs), f, indent=2)
+            print(f"[+] New subscriber registered: {cid_str} (Total: {len(subs)})")
+        except Exception as e:
+            print(f"[Subscriber Save Error]: {e}")
+
+
+def remove_subscriber(chat_id: Any):
+    """Remove a subscriber if they blocked the bot (HTTP 403)."""
+    if not chat_id or is_admin(chat_id):
+        return
+    cid_str = str(chat_id).strip()
+    subs = load_subscribers()
+    if cid_str in subs:
+        subs.remove(cid_str)
+        try:
+            with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
+                json.dump(list(subs), f, indent=2)
+            print(f"[-] Removed inactive subscriber: {cid_str}")
+        except Exception as e:
+            print(f"[Subscriber Remove Error]: {e}")
+
+
 def get_persistent_keyboard() -> dict:
     """Returns persistent phone reply keyboard at bottom of screen."""
     return {
@@ -94,20 +156,25 @@ def get_persistent_keyboard() -> dict:
     }
 
 
-def send_telegram(message: str, with_keyboard: bool = False) -> bool:
-    """Send HTML formatted message to Telegram, automatically chunking if > 3800 chars."""
-    if (
-        not config.TELEGRAM_BOT_TOKEN
-        or config.TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN_HERE"
-        or not config.TELEGRAM_CHAT_ID
-        or config.TELEGRAM_CHAT_ID == "YOUR_CHAT_ID_HERE"
-    ):
+def send_telegram(message: str, with_keyboard: bool = False, chat_id: Optional[Any] = None) -> bool:
+    """
+    Send HTML formatted message to Telegram.
+    - If chat_id is specified: sends privately to that specific user/admin.
+    - If chat_id is None: broadcasts the signal to ALL registered subscriber accounts!
+    """
+    if not config.TELEGRAM_BOT_TOKEN or config.TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("[Telegram preview]:", message)
         return False
 
+    if chat_id:
+        targets = [str(chat_id).strip()]
+    else:
+        targets = list(load_subscribers())
+        if not targets and config.TELEGRAM_CHAT_ID:
+            targets = [str(config.TELEGRAM_CHAT_ID).strip()]
+
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    # Chunk message if needed
     chunks = []
     if len(message) > 3800:
         lines = message.split("\n\n")
@@ -124,28 +191,33 @@ def send_telegram(message: str, with_keyboard: bool = False) -> bool:
     else:
         chunks = [message]
 
-    success = True
-    for idx, chunk in enumerate(chunks):
-        payload = {
-            "chat_id": config.TELEGRAM_CHAT_ID,
-            "text": chunk,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-        if with_keyboard and idx == len(chunks) - 1:
-            payload["reply_markup"] = get_persistent_keyboard()
+    overall_success = True
+    for target in targets:
+        for idx, chunk in enumerate(chunks):
+            payload = {
+                "chat_id": target,
+                "text": chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            # Only attach control keyboard if recipient is the admin
+            if with_keyboard and idx == len(chunks) - 1 and is_admin(target):
+                payload["reply_markup"] = get_persistent_keyboard()
 
-        try:
-            r = requests.post(url, json=payload, timeout=25)
-            r.raise_for_status()
-        except Exception as e:
-            print(f"[Telegram Send Error]: {e}")
-            success = False
+            try:
+                r = requests.post(url, json=payload, timeout=20)
+                if r.status_code == 403:
+                    remove_subscriber(target)
+                elif r.status_code != 200:
+                    overall_success = False
+            except Exception as e:
+                print(f"[Telegram Send Error to {target}]: {e}")
+                overall_success = False
 
-    return success
+    return overall_success
 
 
-def send_startup_banner():
+def send_startup_banner(target_chat_id: Optional[Any] = None):
     """Send clean startup confirmation."""
     msg = (
         f"🟢 <b>Trading Signal Bot Active</b>\n\n"
@@ -153,7 +225,7 @@ def send_startup_banner():
         f"• <b>Signal Format:</b> Entry, TP, SL, and Reason for trade\n\n"
         f"<i>Signals will be sent here automatically when entry setups trigger.</i>"
     )
-    return send_telegram(msg, with_keyboard=True)
+    return send_telegram(msg, with_keyboard=True, chat_id=target_chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -646,8 +718,8 @@ def detect_candlestick_trigger(eval_df: pd.DataFrame, trend_bias: str) -> Option
 # ---------------------------------------------------------------------------
 # 4-Hour Market Update Dispatcher
 # ---------------------------------------------------------------------------
-def send_4h_market_update(is_startup: bool = False):
-    """Compiles and broadcasts the 4H market structure overview."""
+def send_4h_market_update(is_startup: bool = False, target_chat_id: Optional[Any] = None):
+    """Compiles and sends the 4H market structure overview."""
     global LAST_4H_DISPATCH_TIME
     now_utc = datetime.now(timezone.utc)
     LAST_4H_DISPATCH_TIME = now_utc.strftime("%Y-%m-%d %H:%M UTC")
@@ -678,7 +750,7 @@ def send_4h_market_update(is_startup: bool = False):
     countdown = get_time_until_next_4h_close()
     blocks.append(f"━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Next 4H Candle Close:</b> In {countdown}")
     full_msg = "\n\n".join(blocks)
-    send_telegram(full_msg, with_keyboard=True)
+    send_telegram(full_msg, with_keyboard=True, chat_id=target_chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -810,41 +882,67 @@ def handle_telegram_updates():
                         if not text:
                             continue
 
+                        chat_id = str(msg.get("chat", {}).get("id", ""))
                         sender_name = msg.get("from", {}).get("first_name") or msg.get("chat", {}).get("first_name", "trader")
                         cmd = text.lower()
 
-                        if "scan" in cmd:
-                            send_telegram("🔍 <i>Scanning for trade entries...</i>")
-                            run_15m_cycle(is_manual=True)
+                        # Ensure this account is saved as a subscriber to receive all trade signals
+                        save_subscriber(chat_id)
 
-                        elif "structure" in cmd:
-                            send_telegram("📊 <i>Compiling 4H market structure...</i>")
-                            send_4h_market_update()
+                        # Differentiate between administrator and general subscribers
+                        if is_admin(chat_id):
+                            if "scan" in cmd:
+                                send_telegram("🔍 <i>Scanning for trade entries...</i>", chat_id=chat_id)
+                                run_15m_cycle(is_manual=True, request_chat_id=chat_id)
 
-                        elif "news" in cmd:
-                            try:
-                                news_msg = fundamentals.fetch_macro_news(limit=5)
-                                send_telegram(f"📰 <b>Latest Macro News:</b>\n{news_msg}")
-                            except Exception as e:
-                                send_telegram(f"❌ Error fetching macro news: {e}")
+                            elif "structure" in cmd:
+                                send_telegram("📊 <i>Compiling 4H market structure...</i>", chat_id=chat_id)
+                                send_4h_market_update(target_chat_id=chat_id)
 
-                        elif "status" in cmd:
-                            status_msg = (
-                                f"<b>📊 Bot Status: Active 🟢</b>\n\n"
-                                f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
-                                f"• <b>Scanner:</b> 15-Minute candles (every {config.SCAN_INTERVAL}s)\n"
-                                f"• <b>Format:</b> Clean Signals (Entry, TP, SL, Reason)\n"
-                                f"• <b>Cycles Completed:</b> {CYCLE_COUNTER}"
-                            )
-                            send_telegram(status_msg)
+                            elif "news" in cmd:
+                                try:
+                                    news_msg = fundamentals.fetch_macro_news(limit=5)
+                                    send_telegram(f"📰 <b>Latest Macro News:</b>\n{news_msg}", chat_id=chat_id)
+                                except Exception as e:
+                                    send_telegram(f"❌ Error fetching macro news: {e}", chat_id=chat_id)
 
-                        elif cmd in ["/start", "/menu", "menu", "help"]:
-                            send_startup_banner()
+                            elif "status" in cmd:
+                                subs_count = len(load_subscribers())
+                                status_msg = (
+                                    f"<b>📊 Bot Status: Active 🟢</b>\n\n"
+                                    f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
+                                    f"• <b>Subscribers Receiving Signals:</b> {subs_count}\n"
+                                    f"• <b>Scanner:</b> 15-Minute candles (every {config.SCAN_INTERVAL}s)\n"
+                                    f"• <b>Format:</b> Clean Signals (Entry, TP, SL, Reason)\n"
+                                    f"• <b>Cycles Completed:</b> {CYCLE_COUNTER}"
+                                )
+                                send_telegram(status_msg, chat_id=chat_id, with_keyboard=True)
+
+                            elif cmd in ["/start", "/menu", "menu", "help"]:
+                                send_startup_banner(target_chat_id=chat_id)
+
+                            else:
+                                # Full interactive conversation & Gemini AI chat (Admin only)
+                                reply = bot_chat.get_chat_response(text, user_name=sender_name)
+                                send_telegram(reply, chat_id=chat_id, with_keyboard=True)
 
                         else:
-                            # Natural conversation, friendly greetings & trader banter
-                            reply = bot_chat.get_chat_response(text, user_name=sender_name)
-                            send_telegram(reply, with_keyboard=True)
+                            # General subscriber (signals only, no direct chat)
+                            if cmd in ["/start", "start", "/help", "help", "/menu", "menu"]:
+                                welcome_msg = (
+                                    f"👋 <b>Welcome, {sender_name}!</b>\n\n"
+                                    f"✅ <b>You are now subscribed to receive live trading signals.</b>\n\n"
+                                    f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
+                                    f"• <b>Signal Details:</b> Entry, TP, SL, and Reason for trade\n\n"
+                                    f"<i>Whenever a high-probability trade triggers, you will receive the alert directly here automatically! 📈</i>"
+                                )
+                                send_telegram(welcome_msg, chat_id=chat_id)
+                            else:
+                                notice_msg = (
+                                    f"🔒 <i>Hi {sender_name}, direct conversation is reserved for the bot administrator.\n\n"
+                                    f"Don't worry—you are actively subscribed and will automatically receive every trade signal alert as soon as it triggers! 🎯</i>"
+                                )
+                                send_telegram(notice_msg, chat_id=chat_id)
 
         except Exception:
             time.sleep(2)
@@ -855,7 +953,7 @@ def handle_telegram_updates():
 # ---------------------------------------------------------------------------
 # Scanner Execution Loop
 # ---------------------------------------------------------------------------
-def run_15m_cycle(is_manual: bool = False):
+def run_15m_cycle(is_manual: bool = False, request_chat_id: Optional[Any] = None):
     """Executes a 15-minute entry scan across all pairs."""
     global CYCLE_COUNTER
     CYCLE_COUNTER += 1
@@ -885,11 +983,11 @@ def run_15m_cycle(is_manual: bool = False):
 
     if all_signals:
         for sig in all_signals:
-            send_telegram(sig)
-        print(f"[{now_str}] 🚨 Dispatched {len(all_signals)} 15M entry alert(s)!")
-    elif is_manual:
+            send_telegram(sig)  # Broadcasts to all subscribers!
+        print(f"[{now_str}] 🚨 Broadcasted {len(all_signals)} 15M entry alert(s) to all subscribers!")
+    elif is_manual and request_chat_id:
         manual_msg = "🔍 <b>Scan Complete:</b> No active trade entries found at this moment."
-        send_telegram(manual_msg)
+        send_telegram(manual_msg, chat_id=request_chat_id)
 
 
 def main():

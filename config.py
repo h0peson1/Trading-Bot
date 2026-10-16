@@ -2,7 +2,8 @@
 # Signal-only — no broker or MetaTrader required
 
 TELEGRAM_BOT_TOKEN = "8837848491:AAHxFS89-WEezZc2CXoc3AojjtS2BCfymQA"
-TELEGRAM_CHAT_ID = "8402561087"
+TELEGRAM_CHAT_ID = "8402561087"   # Admin chat ID (full interactive chat + control)
+ADMIN_CHAT_ID = TELEGRAM_CHAT_ID
 
 # Twelve Data API key (paste your key here)
 TWELVEDATA_API_KEY = "e498a1660bd547a0b0304ed25ecbcff6"
