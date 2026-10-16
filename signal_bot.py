@@ -1,12 +1,23 @@
 """
-LDE Signal Bot & Telegram Controller
+Axiory Advanced Price Action Signal Bot & Telegram Controller
+Based on: Axiory Advanced Price Action Guide
+
 Architecture:
-- Higher Timeframe (4H): Tracks market structure, 4H displacement, liquidity sweeps, and FVGs.
-  Dispatches comprehensive multi-pair market update after every 4-hour candle close.
-- Lower Timeframe (15m): Continuous execution timeframe for trade entries.
-  Scans 15m candles in real-time for Sweep -> Displacement -> Engulfing / FVG Retest setups.
-  Dispatches instant entry alerts with 4H confluence ratings.
-- Mobile Interactive Telegram Controller: Persistent buttons for manual scans, status, and backtests.
+- Higher Timeframe (4H):
+  * Pure Market Structure via Swing Highs & Lows (HH, HL, LH, LL) — NO lagging indicators
+  * Active Impulse Legs & 50.0% - 61.8% Fibonacci Golden Zone
+  * Break of Structure (BOS) Trend Reversals & Trendline 3rd-Point Touches
+  * Dispatches comprehensive multi-pair market update after every 4-hour candle close
+- Execution Timeframe (15m):
+  * Continuous real-time scanning on closed 15m candles
+  * Checks for retracement pullbacks into the 4H 50%–61.8% Golden Zone / Trendline
+  * Requires completed Candlestick Rejection confirmation:
+    - Bullish / Bearish Pin Bar (Hammer / Shooting Star)
+    - Bullish / Bearish Engulfing
+    - Morning Star / Evening Star
+  * Strict Risk Management: Stop Loss beyond rejection wick, TP1 (1:1.5R - 50% take & BE), TP2 (1:3.0R target)
+- Mobile Interactive Telegram Controller:
+  * Persistent phone buttons for scans, market structure, active Fib zones, and bot status.
 """
 
 import sys
@@ -14,9 +25,9 @@ import time
 import threading
 import argparse
 from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Tuple, Dict, Any
 import pandas as pd
 import requests
-import yfinance as yf
 import config
 import fundamentals
 
@@ -36,10 +47,7 @@ LAST_4H_DISPATCH_TIME = "None yet"
 # Timing & Schedule Helpers (4-Hour Candle Boundaries & 15m Scans)
 # ---------------------------------------------------------------------------
 def get_next_4h_close_utc() -> datetime:
-    """
-    Returns the UTC datetime of the next 4-hour candle close.
-    Standard 4H candle closes: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC.
-    """
+    """Returns the UTC datetime of the next 4-hour candle close (00, 04, 08, 12, 16, 20 UTC)."""
     now = datetime.now(timezone.utc)
     curr_hour = now.hour
     next_hour = ((curr_hour // 4) + 1) * 4
@@ -51,42 +59,37 @@ def get_next_4h_close_utc() -> datetime:
 
 
 def get_time_until_next_4h_close() -> str:
-    """Returns human-readable duration until next 4H candle close."""
+    """Returns human-readable countdown to next 4H candle close."""
     now = datetime.now(timezone.utc)
     target = get_next_4h_close_utc()
     delta = target - now
-    total_seconds = int(delta.total_seconds())
-    if total_seconds < 0:
-        total_seconds = 0
+    total_seconds = max(0, int(delta.total_seconds()))
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     return f"{hours}h {minutes}m"
 
 
 def get_current_4h_slot_key() -> str:
-    """
-    Returns a unique string for the current completed 4H slot,
-    e.g. '2026-10-15-08' representing the 08:00-12:00 UTC candle slot.
-    """
+    """Returns a unique string for the current completed 4H slot, e.g. '2026-10-16-08'."""
     now = datetime.now(timezone.utc)
     slot_hour = (now.hour // 4) * 4
     return f"{now.strftime('%Y-%m-%d')}-{slot_hour:02d}"
 
 
 # ---------------------------------------------------------------------------
-# Telegram API Helpers with Persistent Keyboard
+# Telegram API Helpers with Persistent Phone Keyboard
 # ---------------------------------------------------------------------------
-def get_persistent_keyboard():
+def get_persistent_keyboard() -> dict:
     """Returns persistent phone reply keyboard at bottom of screen."""
     return {
         "keyboard": [
             [
-                {"text": "📊 Backtest Gold (Multi-TF)"},
-                {"text": "📰 Macro News"},
+                {"text": "🔍 Scan 15M Entries"},
+                {"text": "📊 4H Market Structure"},
             ],
             [
-                {"text": "⚡ Macro Backtest"},
-                {"text": "🔍 Scan Market Now"},
+                {"text": "📐 Active Fib Zones"},
+                {"text": "📰 Macro News"},
                 {"text": "ℹ️ Bot Status"},
             ],
         ],
@@ -108,7 +111,7 @@ def send_telegram(message: str, with_keyboard: bool = False) -> bool:
 
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    # Chunk message if it exceeds Telegram's 4096 character limit
+    # Chunk message if needed
     chunks = []
     if len(message) > 3800:
         lines = message.split("\n\n")
@@ -147,150 +150,92 @@ def send_telegram(message: str, with_keyboard: bool = False) -> bool:
 
 
 def send_startup_banner():
-    """Send startup banner detailing 4H updates and 15m entry execution."""
+    """Send startup banner detailing the Axiory Price Action strategy and buttons."""
     next_close = get_next_4h_close_utc()
     countdown = get_time_until_next_4h_close()
     msg = (
-        f"🟢 <b>LDE TRADING BOT IS LIVE!</b>\n\n"
-        f"• <b>Update Timer:</b> Every 4 hours (after every 4H candle close)\n"
-        f"• <b>Trade Entry Timeframe:</b> <b>15-Minute Candles (15m TF)</b>\n"
-        f"• <b>Strategy:</b> 4H HTF Market Structure ➔ 15M Sweep + Retest Entries\n"
+        f"🟢 <b>AXIORY PRICE ACTION SIGNAL BOT IS LIVE!</b>\n\n"
+        f"• <b>Core Methodology:</b> Pure Price Action (Axiory Advanced Guide)\n"
+        f"• <b>Higher Timeframe (4H):</b> Market Structure (HH, HL, LH, LL) & 50%–61.8% Fib Zones\n"
+        f"• <b>Execution Timeframe (15m):</b> Pin Bar, Engulfing, & Morning/Evening Star Rejections\n"
+        f"• <b>Risk/Reward Ratio:</b> 1:1.5 (TP1 scale 50% & BE) ➔ <b>1:3.0+ (TP2 Target)</b>\n"
+        f"• <b>No Lagging Indicators:</b> 100% Raw Price Action\n"
         f"• <b>Next 4H Candle Close:</b> {next_close.strftime('%H:%M UTC')} (in {countdown})\n"
-        f"• <b>Pairs Monitored:</b> {', '.join(config.SYMBOLS.keys())}\n\n"
+        f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n\n"
         f"📱 <i>Control buttons are pinned below! Tap any button anytime from your phone.</i>"
     )
     return send_telegram(msg, with_keyboard=True)
 
 
 # ---------------------------------------------------------------------------
-# Data Fetching
+# Data Fetching & Caching (Twelve Data API with Rate Limiting)
 # ---------------------------------------------------------------------------
+HTF_CACHE: Dict[str, dict] = {}
+LAST_API_CALL_TIME = 0.0
+
+
 def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
-    """Fetch recent historical candles from yfinance."""
-    period_map = {
-        "15m": "30d",
-        "30m": "30d",
-        "1h": "60d",
-        "4h": "60d",
-        "1d": "1y",
+    """Fetch recent historical candles from Twelve Data REST API with polite rate pacing."""
+    global LAST_API_CALL_TIME
+
+    # Respect Twelve Data free tier limits: pace calls by at least 1.5 seconds
+    elapsed = time.time() - LAST_API_CALL_TIME
+    if elapsed < 1.5:
+        time.sleep(1.5 - elapsed)
+
+    outputsize = config.TWELVEDATA_OUTPUTSIZE.get(interval, 200)
+    params = {
+        "symbol": ticker,
+        "interval": interval,
+        "outputsize": outputsize,
+        "apikey": config.TWELVEDATA_API_KEY,
+        "timezone": "UTC",
     }
-    period = period_map.get(interval, "30d")
 
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=period, interval=interval, auto_adjust=True)
-    except Exception as e:
-        print(f"Error fetching {ticker} ({interval}): {e}")
+    data = None
+    for attempt in range(2):
+        try:
+            LAST_API_CALL_TIME = time.time()
+            resp = requests.get(
+                "https://api.twelvedata.com/time_series",
+                params=params,
+                timeout=30,
+            )
+            if resp.status_code == 429:
+                print(f"Rate limited (429) for {ticker}. Waiting 8s before retry...")
+                time.sleep(8)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(3)
+            else:
+                print(f"Error fetching {ticker} ({interval}): {e}")
+                return pd.DataFrame()
+
+    if not data or data.get("status") == "error" or "values" not in data:
+        msg = data.get("message", "Unknown error") if data else "No response"
+        print(f"Twelve Data error for {ticker} ({interval}): {msg}")
         return pd.DataFrame()
 
-    if df is None or df.empty:
+    df = pd.DataFrame(data["values"])
+    if df.empty:
         return pd.DataFrame()
 
-    col_map = {c: c.lower() for c in df.columns}
-    df = df.rename(columns=col_map)
-    required = ["open", "high", "low", "close"]
-    if not all(col in df.columns for col in required):
-        return pd.DataFrame()
+    # Convert types
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df[required].copy()
-    df.dropna(inplace=True)
+    df = df.sort_values("datetime").set_index("datetime")
+    df = df[["open", "high", "low", "close"]].dropna()
     return df
 
 
-# ---------------------------------------------------------------------------
-# LDE Strategy Logic Components
-# ---------------------------------------------------------------------------
-def candle_body_ratio(row) -> float:
-    body = abs(row["close"] - row["open"])
-    total = row["high"] - row["low"]
-    return body / total if total > 0 else 0.0
-
-
-def is_bullish_engulfing(prev, curr) -> bool:
-    return (
-        prev["close"] < prev["open"]
-        and curr["close"] > curr["open"]
-        and curr["open"] <= prev["close"]
-        and curr["close"] >= prev["open"]
-    )
-
-
-def is_bearish_engulfing(prev, curr) -> bool:
-    return (
-        prev["close"] > prev["open"]
-        and curr["close"] < curr["open"]
-        and curr["open"] >= prev["close"]
-        and curr["close"] <= prev["open"]
-    )
-
-
-def find_liquidity_sweep(df: pd.DataFrame, direction: str, lookback: int = 40) -> bool:
-    if len(df) < lookback + 5:
-        return False
-
-    prior_window = df.iloc[-(lookback + 3):-2]
-    curr = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    if direction == "buy":
-        prior_low = prior_window["low"].min()
-        swept = (curr["low"] < prior_low) or (prev["low"] < prior_low)
-        closed_above = curr["close"] > prior_low
-        return swept and closed_above
-    else:
-        prior_high = prior_window["high"].max()
-        swept = (curr["high"] > prior_high) or (prev["high"] > prior_high)
-        closed_below = curr["close"] < prior_high
-        return swept and closed_below
-
-
-def has_displacement(df: pd.DataFrame, direction: str) -> bool:
-    min_needed = config.DISPLACEMENT_COMPARE + config.MAX_DISPLACEMENT_CANDLES + 2
-    if len(df) < min_needed:
-        return False
-
-    recent_candles = df.iloc[-config.MAX_DISPLACEMENT_CANDLES:]
-    baseline = df.iloc[-(config.MAX_DISPLACEMENT_CANDLES + config.DISPLACEMENT_COMPARE):-config.MAX_DISPLACEMENT_CANDLES]
-
-    avg_range = (baseline["high"] - baseline["low"]).mean()
-    if avg_range == 0:
-        return False
-
-    for _, candle in recent_candles.iterrows():
-        b_ratio = candle_body_ratio(candle)
-        c_range = candle["high"] - candle["low"]
-        is_large = c_range >= avg_range * 1.25
-        is_strong_body = b_ratio >= config.MIN_BODY_RATIO
-
-        if direction == "buy":
-            is_directional = candle["close"] > candle["open"]
-        else:
-            is_directional = candle["close"] < candle["open"]
-
-        if is_large and is_strong_body and is_directional:
-            return True
-
-    return False
-
-
-def detect_fvg(df: pd.DataFrame, direction: str) -> str:
-    if len(df) < 4:
-        return ""
-
-    c1 = df.iloc[-3]
-    c3 = df.iloc[-1]
-
-    if direction == "buy" and c3["low"] > c1["high"]:
-        gap_size = c3["low"] - c1["high"]
-        return f" | <b>15M FVG:</b> {format_price(c1['high'])}–{format_price(c3['low'])} (+{gap_size:.4f})"
-    elif direction == "sell" and c3["high"] < c1["low"]:
-        gap_size = c1["low"] - c3["high"]
-        return f" | <b>15M FVG:</b> {format_price(c3['high'])}–{format_price(c1['low'])} (-{gap_size:.4f})"
-
-    return ""
-
-
 def format_price(val: float) -> str:
+    """Formats price based on scale (forex pips vs crypto/metals)."""
     if val >= 1000:
         return f"{val:,.2f}"
     elif val >= 1:
@@ -300,12 +245,160 @@ def format_price(val: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 4-Hour Higher Timeframe (HTF) Market Analysis & Scheduled Updates
+# Pure Price Action Engine: Swing Points & Market Structure (HH, HL, LH, LL)
+# ---------------------------------------------------------------------------
+class SwingPoint:
+    def __init__(self, index: int, time: str, price: float, swing_type: str):
+        self.index = index
+        self.time = time
+        self.price = price
+        self.swing_type = swing_type  # "HIGH" or "LOW"
+        self.label = ""               # "HH", "LH", "HL", "LL"
+
+
+def find_swing_points(df: pd.DataFrame, order: int = 3) -> List[SwingPoint]:
+    """
+    Identifies fractal swing highs and swing lows using an N-bar local extrema window.
+    Compares consecutive pivots to classify Higher Highs (HH), Lower Highs (LH),
+    Higher Lows (HL), and Lower Lows (LL).
+    """
+    if len(df) < (order * 2 + 5):
+        return []
+
+    highs = df["high"].values
+    lows = df["low"].values
+    times = df.index
+    swings: List[SwingPoint] = []
+
+    # Search for confirmed local extrema (leaving 'order' candles on right side)
+    for i in range(order, len(df) - order):
+        curr_high = highs[i]
+        curr_low = lows[i]
+
+        # 1. Swing High Check
+        is_high = True
+        for o in range(1, order + 1):
+            if curr_high <= highs[i - o] or curr_high <= highs[i + o]:
+                is_high = False
+                break
+        if is_high:
+            swings.append(SwingPoint(i, str(times[i]), float(curr_high), "HIGH"))
+
+        # 2. Swing Low Check
+        is_low = True
+        for o in range(1, order + 1):
+            if curr_low >= lows[i - o] or curr_low >= lows[i + o]:
+                is_low = False
+                break
+        if is_low:
+            swings.append(SwingPoint(i, str(times[i]), float(curr_low), "LOW"))
+
+    swings.sort(key=lambda s: s.index)
+
+    # Classify consecutive Highs and Lows
+    last_high: Optional[SwingPoint] = None
+    last_low: Optional[SwingPoint] = None
+
+    for s in swings:
+        if s.swing_type == "HIGH":
+            if last_high is not None:
+                s.label = "HH" if s.price > last_high.price else "LH"
+            else:
+                s.label = "HIGH"
+            last_high = s
+        elif s.swing_type == "LOW":
+            if last_low is not None:
+                s.label = "HL" if s.price > last_low.price else "LL"
+            else:
+                s.label = "LOW"
+            last_low = s
+
+    return swings
+
+
+# ---------------------------------------------------------------------------
+# Fibonacci Retracement Calculator (Chapter 6 — Pages 16–19)
+# ---------------------------------------------------------------------------
+def calculate_fibonacci_levels(swing_low: float, swing_high: float, trend: str) -> dict:
+    """
+    Calculates Fibonacci Retracement levels from the active impulse leg:
+    - 38.2% minor retracement
+    - 50.0% & 61.8% Golden Retracement Entry Zone
+    - 100.0% structural invalidation level
+    """
+    range_span = swing_high - swing_low
+    if range_span <= 0:
+        return {}
+
+    if "BULLISH" in trend:
+        # Pullback downward into discount zone
+        fib50 = swing_high - (range_span * config.FIB_ENTRY_50)
+        fib618 = swing_high - (range_span * config.FIB_ENTRY_618)
+        return {
+            "peak": swing_high,
+            "fib382": swing_high - (range_span * config.FIB_LEVEL_382),
+            "fib50": fib50,
+            "fib618": fib618,
+            "invalidation": swing_low,
+            "zone_top": fib50,
+            "zone_bottom": fib618,
+        }
+    else:
+        # Pullback upward into premium zone
+        fib50 = swing_low + (range_span * config.FIB_ENTRY_50)
+        fib618 = swing_low + (range_span * config.FIB_ENTRY_618)
+        return {
+            "trough": swing_low,
+            "fib382": swing_low + (range_span * config.FIB_LEVEL_382),
+            "fib50": fib50,
+            "fib618": fib618,
+            "invalidation": swing_high,
+            "zone_bottom": fib50,
+            "zone_top": fib618,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Trendline 3rd-Point Projection (Chapter 3 — Pages 7–8)
+# ---------------------------------------------------------------------------
+def calculate_trendline_3rd_point(swings: List[SwingPoint], trend: str, curr_index: int) -> Optional[float]:
+    """
+    Calculates projected 3rd touch level by projecting a line across the last 2 confirmed swing points.
+    Formula: y = y1 + slope * (x - x1)
+    """
+    if "BULLISH" in trend:
+        lows = [s for s in swings if s.swing_type == "LOW"]
+        if len(lows) < 2:
+            return None
+        p1, p2 = lows[-2], lows[-1]
+        dx = p2.index - p1.index
+        if dx <= 0:
+            return None
+        slope = (p2.price - p1.price) / dx
+        return p2.price + slope * (curr_index - p2.index)
+    elif "BEARISH" in trend:
+        highs = [s for s in swings if s.swing_type == "HIGH"]
+        if len(highs) < 2:
+            return None
+        p1, p2 = highs[-2], highs[-1]
+        dx = p2.index - p1.index
+        if dx <= 0:
+            return None
+        slope = (p2.price - p1.price) / dx
+        return p2.price + slope * (curr_index - p2.index)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Higher Timeframe (4H) Market Structure Analysis
 # ---------------------------------------------------------------------------
 def analyze_4h_bias(df4: pd.DataFrame) -> dict:
     """
-    Evaluates market structure, 50 EMA, sweeps, and Fair Value Gaps on the 4H timeframe.
-    Generates institutional explanation and concrete potential entry and exit levels.
+    Evaluates 4H pure price action structure:
+    1. Swing Points (HH, HL, LH, LL)
+    2. Trend State: BULLISH, BEARISH, BOS REVERSAL, or RANGING
+    3. Active Fibonacci 50%–61.8% Golden Zone
+    4. Trendline 3rd Point level
     """
     if len(df4) < 25:
         close_p = df4.iloc[-1]["close"] if not df4.empty else 0.0
@@ -313,170 +406,267 @@ def analyze_4h_bias(df4: pd.DataFrame) -> dict:
             "bias": "NEUTRAL ⚪",
             "close": close_p,
             "change_pct": 0.0,
-            "explanation": "Insufficient historical candles to determine 4H structure.",
-            "plan": {
-                "type": "WAIT",
-                "entry_desc": "Gathering candle data",
-                "entry_zone": "N/A",
-                "invalidation_sl": "N/A",
-                "tp1": "N/A",
-                "tp2": "N/A",
-            },
+            "explanation": "Gathering historical candles for structure mapping.",
+            "fibs": {},
+            "trendline_level": None,
+            "plan": {"type": "WAIT", "entry_zone": "N/A", "invalidation_sl": "N/A", "tp1": "N/A", "tp2": "N/A"}
         }
 
-    # Evaluate the most recently closed 4H candle
     c_prev = df4.iloc[-3]
     c_curr = df4.iloc[-2]
-
-    close = c_curr["close"]
+    current_close = c_curr["close"]
     prev_close = c_prev["close"]
-    change_pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+    change_pct = ((current_close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
 
-    # 50 EMA on 4H
-    ema50 = df4["close"].ewm(span=50, adjust=False).mean().iloc[-2]
+    swings = find_swing_points(df4, order=config.SWING_ORDER)
+    highs = [s for s in swings if s.swing_type == "HIGH"]
+    lows = [s for s in swings if s.swing_type == "LOW"]
 
-    # Lookback window for key structural swings
-    lookback = df4.iloc[-30:-2]
-    recent_swing_high = lookback["high"].max()
-    recent_swing_low = lookback["low"].min()
+    if len(highs) < 2 or len(lows) < 2:
+        return {
+            "bias": "NEUTRAL ⚪",
+            "close": current_close,
+            "change_pct": change_pct,
+            "explanation": "Establishing initial market structure swing points.",
+            "fibs": {},
+            "trendline_level": None,
+            "plan": {"type": "WAIT", "entry_zone": "N/A", "invalidation_sl": "N/A", "tp1": "N/A", "tp2": "N/A"}
+        }
 
-    # 4H Fair Value Gap check
-    c1 = df4.iloc[-4]
-    c3 = df4.iloc[-2]
-    has_bull_fvg = c3["low"] > c1["high"]
-    has_bear_fvg = c3["high"] < c1["low"]
+    latest_h = highs[-1]
+    latest_l = lows[-1]
 
-    fvg_low, fvg_high = None, None
-    if has_bull_fvg:
-        fvg_low, fvg_high = c1["high"], c3["low"]
-    elif has_bear_fvg:
-        fvg_low, fvg_high = c3["high"], c1["low"]
+    # Check for Break of Structure (BOS - Reversal Trading from Page 11-12)
+    is_bos_bearish = (latest_h.label == "HH") and (current_close < latest_l.price)
+    is_bos_bullish = (latest_l.label == "LL") and (current_close > latest_h.price)
 
-    # 4H Liquidity Sweep check
-    swept_low = c_curr["low"] < recent_swing_low and c_curr["close"] > recent_swing_low
-    swept_high = c_curr["high"] > recent_swing_high and c_curr["close"] < recent_swing_high
+    # Standard Structural Trend with Chronological Impulse Verification
+    is_bullish = (latest_h.label == "HH" and latest_l.label == "HL" and latest_h.index > latest_l.index)
+    is_bearish = (latest_h.label == "LH" and latest_l.label == "LL" and latest_l.index > latest_h.index)
 
-    # Determine Bias, Narrative Explanation, and Concrete Entries/Exits
-    if close > ema50 and (swept_low or c_curr["close"] > c_curr["open"]):
+    # 100 SMA Macro Trend Alignment (Chapter 5 Axiory Guide)
+    if config.USE_100_SMA_FILTER and len(df4) >= 100:
+        sma100 = df4["close"].rolling(window=100).mean().iloc[-2]
+        if is_bullish and current_close < sma100:
+            is_bullish = False
+        elif is_bearish and current_close > sma100:
+            is_bearish = False
+
+    if is_bos_bearish:
+        bias = "REVERSAL_BEARISH_BOS ⚠️"
+        explanation = f"Uptrend broken: Price closed below previous Higher Low ({format_price(latest_l.price)})."
+        fibs = calculate_fibonacci_levels(current_close, latest_h.price, "BEARISH")
+    elif is_bos_bullish:
+        bias = "REVERSAL_BULLISH_BOS ⚠️"
+        explanation = f"Downtrend broken: Price closed above previous Lower High ({format_price(latest_h.price)})."
+        fibs = calculate_fibonacci_levels(latest_l.price, current_close, "BULLISH")
+    elif is_bullish:
         bias = "BULLISH 🟢"
-        explanation = f"Price closed at {format_price(close)} (+{change_pct:.2f}%) holding above 4H 50 EMA ({format_price(ema50)})."
-        if swept_low:
-            explanation += f" Swept liquidity below prior swing low ({format_price(recent_swing_low)}) with immediate rejection."
-        elif has_bull_fvg:
-            explanation += f" Strong bullish displacement printed an active 4H Fair Value Gap between {format_price(fvg_low)} and {format_price(fvg_high)}."
-        else:
-            explanation += " Institutional orderflow remains bullish with buyers defending higher swing lows."
+        explanation = f"Uptrend active: Making Higher Highs ({format_price(latest_h.price)}) & Higher Lows ({format_price(latest_l.price)})."
+        fibs = calculate_fibonacci_levels(latest_l.price, latest_h.price, "BULLISH")
+    elif is_bearish:
+        bias = "BEARISH 🔴"
+        explanation = f"Downtrend active: Making Lower Highs ({format_price(latest_h.price)}) & Lower Lows ({format_price(latest_l.price)})."
+        fibs = calculate_fibonacci_levels(latest_l.price, latest_h.price, "BEARISH")
+    else:
+        bias = "RANGING ⚪"
+        explanation = f"Consolidating between Swing High ({format_price(latest_h.price)}) & Swing Low ({format_price(latest_l.price)})."
+        fibs = calculate_fibonacci_levels(latest_l.price, latest_h.price, "BULLISH")
 
-        # Potential Entry Zone
-        if has_bull_fvg:
-            entry_min, entry_max = fvg_low, fvg_high
-            entry_mid = (entry_min + entry_max) / 2.0
-            entry_desc = f"Retest of 4H Discount FVG ({format_price(entry_min)}–{format_price(entry_max)}) on 15M bullish rejection"
-        else:
-            entry_mid = (recent_swing_low + close) / 2.0
-            entry_min = min(entry_mid, close * 0.998)
-            entry_max = close
-            entry_desc = f"15M Pullback Retest Zone ({format_price(entry_min)}–{format_price(entry_max)})"
+    # Trendline 3rd Point
+    tl_level = calculate_trendline_3rd_point(swings, bias, len(df4) - 2)
 
-        # Structural Stop Loss & Targets
-        base_low = min(c_curr["low"], c_prev["low"], recent_swing_low, entry_min)
-        buffer = 2.0 if close >= 1000 else 0.0015
-        sl = base_low - buffer
-        risk = abs(entry_mid - sl)
-        if risk <= 0:
-            risk = close * 0.005
-        tp1 = entry_mid + (risk * 1.5)
-        tp2 = entry_mid + (risk * 2.5)
+    # Build Plan
+    plan = {}
+    if "BULLISH" in bias and fibs:
+        entry_mid = (fibs["zone_top"] + fibs["zone_bottom"]) / 2.0
+        buffer = 2.0 if current_close >= 1000 else 0.0010
+        sl = fibs["invalidation"] - buffer
+        risk = max(entry_mid - sl, current_close * 0.004)
+        tp1 = entry_mid + (risk * config.TP1_RR)
+        tp2 = entry_mid + (risk * config.TP2_RR)
 
         plan = {
             "type": "BUY / LONG",
-            "entry_zone": f"{format_price(entry_min)} – {format_price(entry_max)} (Mid: {format_price(entry_mid)})",
-            "entry_desc": entry_desc,
-            "invalidation_sl": f"{format_price(sl)} (Below 4H swing structural low)",
-            "tp1": f"{format_price(tp1)} (1:1.5 R:R — Scale 50% & SL to Breakeven)",
-            "tp2": f"{format_price(tp2)} (1:2.5 R:R — Major swing high liquidity)",
+            "entry_zone": f"{format_price(fibs['zone_bottom'])} – {format_price(fibs['zone_top'])} (50%–61.8% Golden Fib)",
+            "invalidation_sl": f"{format_price(sl)} (Below Swing Low)",
+            "tp1": f"{format_price(tp1)} (1:{config.TP1_RR} R:R — Scale 50% & SL to BE)",
+            "tp2": f"{format_price(tp2)} (1:{config.TP2_RR} R:R — Full Target)",
         }
-
-    elif close < ema50 and (swept_high or c_curr["close"] < c_curr["open"]):
-        bias = "BEARISH 🔴"
-        explanation = f"Price closed at {format_price(close)} ({change_pct:.2f}%) below 4H 50 EMA ({format_price(ema50)})."
-        if swept_high:
-            explanation += f" Swept buy-side liquidity above prior swing high ({format_price(recent_swing_high)}) and rejected downward."
-        elif has_bear_fvg:
-            explanation += f" Bearish displacement formed an active 4H Fair Value Gap between {format_price(fvg_high)} and {format_price(fvg_low)}."
-        else:
-            explanation += " Institutional sellers maintain dominance with consecutive lower highs."
-
-        # Potential Entry Zone
-        if has_bear_fvg:
-            entry_min, entry_max = fvg_low, fvg_high
-            entry_mid = (entry_min + entry_max) / 2.0
-            entry_desc = f"Retest of 4H Premium FVG ({format_price(entry_min)}–{format_price(entry_max)}) on 15M bearish rejection"
-        else:
-            entry_mid = (recent_swing_high + close) / 2.0
-            entry_min = close
-            entry_max = max(entry_mid, close * 1.002)
-            entry_desc = f"15M Retracement Zone ({format_price(entry_min)}–{format_price(entry_max)})"
-
-        # Structural Stop Loss & Targets
-        base_high = max(c_curr["high"], c_prev["high"], recent_swing_high, entry_max)
-        buffer = 2.0 if close >= 1000 else 0.0015
-        sl = base_high + buffer
-        risk = abs(sl - entry_mid)
-        if risk <= 0:
-            risk = close * 0.005
-        tp1 = entry_mid - (risk * 1.5)
-        tp2 = entry_mid - (risk * 2.5)
+    elif "BEARISH" in bias and fibs:
+        entry_mid = (fibs["zone_top"] + fibs["zone_bottom"]) / 2.0
+        buffer = 2.0 if current_close >= 1000 else 0.0010
+        sl = fibs["invalidation"] + buffer
+        risk = max(sl - entry_mid, current_close * 0.004)
+        tp1 = entry_mid - (risk * config.TP1_RR)
+        tp2 = entry_mid - (risk * config.TP2_RR)
 
         plan = {
             "type": "SELL / SHORT",
-            "entry_zone": f"{format_price(entry_min)} – {format_price(entry_max)} (Mid: {format_price(entry_mid)})",
-            "entry_desc": entry_desc,
-            "invalidation_sl": f"{format_price(sl)} (Above 4H swing structural high)",
-            "tp1": f"{format_price(tp1)} (1:1.5 R:R — Scale 50% & SL to Breakeven)",
-            "tp2": f"{format_price(tp2)} (1:2.5 R:R — Major swing low liquidity)",
+            "entry_zone": f"{format_price(fibs['zone_bottom'])} – {format_price(fibs['zone_top'])} (50%–61.8% Golden Fib)",
+            "invalidation_sl": f"{format_price(sl)} (Above Swing High)",
+            "tp1": f"{format_price(tp1)} (1:{config.TP1_RR} R:R — Scale 50% & SL to BE)",
+            "tp2": f"{format_price(tp2)} (1:{config.TP2_RR} R:R — Full Target)",
         }
     else:
-        bias = "NEUTRAL / RANGE ⚪"
-        range_size = abs(recent_swing_high - recent_swing_low)
-        mid_range = (recent_swing_high + recent_swing_low) / 2.0
-        explanation = f"Price closed at {format_price(close)} ({change_pct:+.2f}%) oscillating around 4H 50 EMA ({format_price(ema50)}). Consolidating between Support ({format_price(recent_swing_low)}) and Resistance ({format_price(recent_swing_high)})."
-
         plan = {
-            "type": "RANGE PLAY (Play Extremes)",
-            "entry_zone": f"Longs near {format_price(recent_swing_low)} | Shorts near {format_price(recent_swing_high)}",
-            "entry_desc": "Wait for 15M liquidity sweep at range extremes before executing",
-            "invalidation_sl": f"Long SL below {format_price(recent_swing_low)} | Short SL above {format_price(recent_swing_high)}",
-            "tp1": f"{format_price(mid_range)} (50% Equilibrium of Range)",
-            "tp2": f"Opposite range edge ({format_price(recent_swing_high)} for Longs / {format_price(recent_swing_low)} for Shorts)",
+            "type": "WAIT / RANGE",
+            "entry_zone": "Wait for breakout or clean pullback",
+            "invalidation_sl": "N/A",
+            "tp1": "N/A",
+            "tp2": "N/A",
         }
 
     return {
         "bias": bias,
-        "close": close,
+        "close": current_close,
         "change_pct": change_pct,
         "explanation": explanation,
+        "latest_high": latest_h,
+        "latest_low": latest_l,
+        "fibs": fibs,
+        "trendline_level": tl_level,
         "plan": plan,
     }
 
 
+# ---------------------------------------------------------------------------
+# Candlestick Confirmation Triggers (Chapter 9 Cheat Sheet)
+# ---------------------------------------------------------------------------
+def detect_candlestick_trigger(eval_df: pd.DataFrame, trend_bias: str) -> Optional[Dict[str, Any]]:
+    """
+    Evaluates completed candles for price action triggers:
+    - Pin Bar / Hammer (Bullish rejection) / Shooting Star (Bearish rejection)
+    - Bullish / Bearish Engulfing
+    - Morning Star (Bullish bottom reversal) / Evening Star (Bearish top reversal)
+    """
+    if len(eval_df) < 4:
+        return None
+
+    curr = eval_df.iloc[-1]
+    prev = eval_df.iloc[-2]
+    prev2 = eval_df.iloc[-3]
+
+    curr_range = curr["high"] - curr["low"]
+    if curr_range <= 0:
+        return None
+
+    curr_body = abs(curr["close"] - curr["open"])
+    curr_upper_wick = curr["high"] - max(curr["open"], curr["close"])
+    curr_lower_wick = min(curr["open"], curr["close"]) - curr["low"]
+
+    # 1. Bullish Triggers
+    if "BULLISH" in trend_bias:
+        # A. Bullish Pin Bar (Hammer)
+        is_bull_pin = (
+            curr_lower_wick >= (2.0 * curr_body)
+            and curr_lower_wick >= (0.50 * curr_range)
+            and curr_upper_wick <= (0.25 * curr_range)
+            and curr["close"] >= curr["open"]
+        )
+        if is_bull_pin:
+            return {
+                "signal": "BUY",
+                "pattern": "Bullish Pin Bar / Hammer",
+                "entry": curr["close"],
+                "sl": curr["low"],
+                "detail": f"Lower wick rejected downward pressure (wick: {format_price(curr_lower_wick)})",
+            }
+
+        # B. Bullish Engulfing (High-Conviction Body Expansion)
+        prev_bearish = prev["close"] < prev["open"]
+        curr_bullish = curr["close"] > curr["open"]
+        if prev_bearish and curr_bullish and curr["close"] >= prev["high"] and curr_body >= (0.55 * curr_range):
+            return {
+                "signal": "BUY",
+                "pattern": "Bullish Engulfing",
+                "entry": curr["close"],
+                "sl": min(curr["low"], prev["low"]),
+                "detail": "Bullish body fully engulfed prior candle high with strong expansion",
+            }
+
+        # C. Morning Star (3-Candle Reversal)
+        c1_bearish = prev2["close"] < prev2["open"]
+        c1_body = abs(prev2["open"] - prev2["close"])
+        c2_body = abs(prev["close"] - prev["open"])
+        c2_range = prev["high"] - prev["low"]
+        c2_small = c2_range > 0 and (c2_body / c2_range) <= 0.35
+        c3_bullish = curr["close"] > curr["open"]
+        c3_penetrates = curr["close"] >= (prev2["close"] + 0.50 * c1_body)
+
+        if c1_bearish and c2_small and c3_bullish and c3_penetrates and c1_body > 0:
+            return {
+                "signal": "BUY",
+                "pattern": "Morning Star (3-Candle Reversal)",
+                "entry": curr["close"],
+                "sl": min(curr["low"], prev["low"], prev2["low"]),
+                "detail": "3-candle morning star completed with strong green close",
+            }
+
+    # 2. Bearish Triggers
+    elif "BEARISH" in trend_bias:
+        # A. Bearish Pin Bar (Shooting Star)
+        is_bear_pin = (
+            curr_upper_wick >= (2.0 * curr_body)
+            and curr_upper_wick >= (0.50 * curr_range)
+            and curr_lower_wick <= (0.25 * curr_range)
+            and curr["close"] <= curr["open"]
+        )
+        if is_bear_pin:
+            return {
+                "signal": "SELL",
+                "pattern": "Bearish Pin Bar / Shooting Star",
+                "entry": curr["close"],
+                "sl": curr["high"],
+                "detail": f"Upper wick rejected upward pressure (wick: {format_price(curr_upper_wick)})",
+            }
+
+        # B. Bearish Engulfing (High-Conviction Body Expansion)
+        prev_bullish = prev["close"] > prev["open"]
+        curr_bearish = curr["close"] < curr["open"]
+        if prev_bullish and curr_bearish and curr["close"] <= prev["low"] and curr_body >= (0.55 * curr_range):
+            return {
+                "signal": "SELL",
+                "pattern": "Bearish Engulfing",
+                "entry": curr["close"],
+                "sl": max(curr["high"], prev["high"]),
+                "detail": "Bearish body fully engulfed prior candle low with strong expansion",
+            }
+
+        # C. Evening Star (3-Candle Reversal)
+        c1_bullish = prev2["close"] > prev2["open"]
+        c1_body = abs(prev2["open"] - prev2["close"])
+        c2_body = abs(prev["close"] - prev["open"])
+        c2_range = prev["high"] - prev["low"]
+        c2_small = c2_range > 0 and (c2_body / c2_range) <= 0.35
+        c3_bearish = curr["close"] < curr["open"]
+        c3_penetrates = curr["close"] <= (prev2["close"] - 0.50 * c1_body)
+
+        if c1_bullish and c2_small and c3_bearish and c3_penetrates and c1_body > 0:
+            return {
+                "signal": "SELL",
+                "pattern": "Evening Star (3-Candle Reversal)",
+                "entry": curr["close"],
+                "sl": max(curr["high"], prev["high"], prev2["high"]),
+                "detail": "3-candle evening star completed with strong red close",
+            }
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 4-Hour Market Update Dispatcher
+# ---------------------------------------------------------------------------
 def send_4h_market_update(is_startup: bool = False):
-    """
-    Assembles and dispatches the comprehensive 4-Hour Market Close & Multi-Asset Briefing.
-    Explains 4H market structure and gives concrete potential 15M entries and exits.
-    Fires right after each 4H candle closes (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC).
-    """
+    """Compiles and broadcasts the 4H market structure and Fibonacci overview."""
     global LAST_4H_DISPATCH_TIME
     now_utc = datetime.now(timezone.utc)
     LAST_4H_DISPATCH_TIME = now_utc.strftime("%Y-%m-%d %H:%M UTC")
 
-    next_close = get_next_4h_close_utc()
-    countdown = get_time_until_next_4h_close()
-
     header_title = "INITIAL 4H MARKET BRIEFING" if is_startup else "4-HOUR CANDLE CLOSE & MARKET UPDATE"
     blocks = [
         f"📊 <b>{header_title}</b>\n"
-        f"<i>Time: {now_utc.strftime('%H:%M UTC')} • 15M Trade Execution Active</i>\n"
+        f"<i>Time: {now_utc.strftime('%H:%M UTC')} • Axiory Price Action Strategy</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     ]
 
@@ -486,15 +676,29 @@ def send_4h_market_update(is_startup: bool = False):
             if df4.empty:
                 continue
             res = analyze_4h_bias(df4)
+            HTF_CACHE[ticker] = res  # Cache 4H analysis
             plan = res["plan"]
             sign = "+" if res["change_pct"] >= 0 else ""
 
+            fib_info = ""
+            if res.get("fibs"):
+                f = res["fibs"]
+                fib_info = (
+                    f"\n• <b>📐 4H Golden Fib Zone:</b> {format_price(f['zone_bottom'])} – {format_price(f['zone_top'])}\n"
+                    f"  - <i>38.2% Minor:</i> {format_price(f['fib382'])}\n"
+                    f"  - <i>Invalidation:</i> {format_price(f['invalidation'])}"
+                )
+
+            tl_info = ""
+            if res.get("trendline_level"):
+                tl_info = f"\n• <b>📈 3rd-Point Trendline:</b> {format_price(res['trendline_level'])}"
+
             block = (
                 f"<b>{name}:</b> {format_price(res['close'])} ({sign}{res['change_pct']:.2f}%) | <b>{res['bias']}</b>\n"
-                f"• <b>Market Context:</b> {res['explanation']}\n"
-                f"• <b>🎯 Potential 15M Entries:</b> {plan['entry_zone']}\n"
-                f"  <i>Strategy:</i> {plan['entry_desc']}\n"
-                f"• <b>🛑 Potential Exits:</b>\n"
+                f"• <b>Market Structure:</b> {res['explanation']}"
+                f"{fib_info}"
+                f"{tl_info}\n"
+                f"• <b>🎯 Planned Setup:</b> {plan['entry_zone']}\n"
                 f"  - <i>Invalidation (SL):</i> {plan['invalidation_sl']}\n"
                 f"  - <i>Target 1 (TP1):</i> {plan['tp1']}\n"
                 f"  - <i>Target 2 (TP2):</i> {plan['tp2']}"
@@ -503,136 +707,117 @@ def send_4h_market_update(is_startup: bool = False):
         except Exception as e:
             print(f"Error compiling 4H update for {name}: {e}")
 
-    blocks.append(
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏱ <b>Next 4H Candle Close:</b> {next_close.strftime('%H:%M UTC')} (in {countdown})\n"
-        f"🎯 <i>Bot is actively scanning every closed 15-minute candle to trigger live entries!</i>"
-    )
-
-    message = "\n\n".join(blocks)
-    send_telegram(message)
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📢 4-Hour Market Update sent to Telegram!")
+    countdown = get_time_until_next_4h_close()
+    blocks.append(f"━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Next 4H Candle Close:</b> In {countdown}")
+    full_msg = "\n\n".join(blocks)
+    send_telegram(full_msg, with_keyboard=True)
 
 
 # ---------------------------------------------------------------------------
-# 15-Minute Lower Timeframe (LTF) Trade Entry Scanner
+# 15-Minute Entry Execution Scanner
 # ---------------------------------------------------------------------------
-def scan_15m_entry(symbol_name: str, ticker: str, htf_bias_str: str) -> list:
+def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
     """
-    Scans the 15-minute timeframe for high-probability LDE entries:
-    - 15m Liquidity Sweep
-    - 15m Displacement
-    - 15m Engulfing Confirmation
-    - 15m FVG Retest / Limit Entry
-    Cross-checks confluence with 4H HTF bias.
+    Scans the 15-minute timeframe for high-probability Axiory Price Action entries:
+    - Retracement pullback into the 4H 50%–61.8% Golden Zone or 3rd Trendline touch
+    - Candlestick Rejection Trigger (Pin Bar, Engulfing, Morning/Evening Star)
+    - 1:3+ Risk/Reward management
     """
     signals = []
     df = fetch_candles(ticker, config.ENTRY_TIMEFRAME)
-    if df.empty or len(df) < (config.LOOKBACK_CANDLES + 5):
+    if df.empty or len(df) < 15:
         return signals
 
+    # Evaluate the most recently completed candle
     curr = df.iloc[-2]
-    prev = df.iloc[-3]
-    candle_time = str(curr.name)
+    candle_time = curr.name
+
+    # Hard age filter — ignore candles older than ~25 minutes
+    now = datetime.now(timezone.utc)
+    if candle_time.tzinfo is None:
+        candle_time = candle_time.tz_localize("UTC")
+    if (now - candle_time) > timedelta(minutes=25):
+        return signals
+
     eval_df = df.iloc[:-1]
+    bias = htf_analysis.get("bias", "NEUTRAL ⚪")
+    fibs = htf_analysis.get("fibs", {})
+    tl_level = htf_analysis.get("trendline_level")
 
-    # 1. Bullish Setup on 15m
-    if (
-        find_liquidity_sweep(eval_df, "buy", lookback=40)
-        and has_displacement(eval_df, "buy")
-        and is_bullish_engulfing(prev, curr)
-    ):
-        alert_key = (symbol_name, "15m", candle_time, "BUY")
-        if alert_key not in RECENT_ALERTS:
-            RECENT_ALERTS.add(alert_key)
-            fvg_text = detect_fvg(eval_df, "buy")
+    # Check if price touched the Golden Zone or Trendline
+    in_fib_zone = False
+    if fibs:
+        c_low = curr["low"]
+        c_high = curr["high"]
+        zone_top = max(fibs["zone_top"], fibs["zone_bottom"])
+        zone_bottom = min(fibs["zone_top"], fibs["zone_bottom"])
+        in_fib_zone = (c_low <= zone_top) and (c_high >= zone_bottom)
 
-            c1 = eval_df.iloc[-3]
-            c3 = eval_df.iloc[-1]
-            has_fvg = c3["low"] > c1["high"]
-            if has_fvg:
-                entry = (c1["high"] + c3["low"]) / 2.0
-                entry_type = "Limit Entry (50% 15M FVG Retest)"
-            else:
-                entry = curr["close"]
-                entry_type = "Market Close Entry (15M)"
+    near_trendline = False
+    if tl_level:
+        tol = curr["close"] * 0.0015
+        near_trendline = abs(curr["low"] - tl_level) <= tol or abs(curr["high"] - tl_level) <= tol
 
-            sl = min(c1["low"], prev["low"], curr["low"])
-            risk = abs(entry - sl)
-            tp1 = entry + (risk * 1.5)
-            tp2 = entry + (risk * 2.5)
+    # Must be reacting at a key level (Fib Zone or Trendline)
+    if not (in_fib_zone or near_trendline):
+        return signals
 
-            # Confluence check with 4H Higher Timeframe
-            if "BULLISH" in htf_bias_str:
-                confluence_badge = "🔥 <b>HIGH CONFLUENCE (4H HTF + 15M ALIGNED)</b>"
-            elif "BEARISH" in htf_bias_str:
-                confluence_badge = "⚡ <b>15M COUNTER-TREND SCALP (Against 4H Trend)</b>"
-            else:
-                confluence_badge = "⚪ <b>15M RANGE SETUP (4H Neutral)</b>"
+    # Candlestick Confirmation Trigger
+    trigger = detect_candlestick_trigger(eval_df, bias)
+    if not trigger:
+        return signals
 
-            signals.append(
-                f"⚡ <b>LDE 15M TRADE ENTRY ALERT</b>\n\n"
-                f"🟢 <b>BUY {symbol_name} (15-Minute Execution)</b>\n"
-                f"• {confluence_badge}\n"
-                f"• <b>4H HTF Bias:</b> {htf_bias_str}\n"
-                f"• <b>Trigger:</b> 15M Sweep ➔ Displacement ➔ Bullish Engulfing{fvg_text}\n"
-                f"• <b>{entry_type}:</b> {format_price(entry)}\n"
-                f"• <b>Stop Loss:</b> {format_price(sl)} (Risk: {format_price(risk)})\n"
-                f"• <b>🎯 TP1 (1:1.5 - Take 50% & SL to BE):</b> {format_price(tp1)}\n"
-                f"• <b>🎯 TP2 (1:2.5 - Final Target):</b> {format_price(tp2)}\n"
-                f"• <i>Closed 15M Candle:</i> {candle_time}"
-            )
+    alert_direction = trigger["signal"]
+    alert_key = (symbol_name, "15m", str(candle_time), alert_direction)
+    if alert_key in RECENT_ALERTS:
+        return signals
 
-    # 2. Bearish Setup on 15m
-    if (
-        find_liquidity_sweep(eval_df, "sell", lookback=40)
-        and has_displacement(eval_df, "sell")
-        and is_bearish_engulfing(prev, curr)
-    ):
-        alert_key = (symbol_name, "15m", candle_time, "SELL")
-        if alert_key not in RECENT_ALERTS:
-            RECENT_ALERTS.add(alert_key)
-            fvg_text = detect_fvg(eval_df, "sell")
-
-            c1 = eval_df.iloc[-3]
-            c3 = eval_df.iloc[-1]
-            has_fvg = c3["high"] < c1["low"]
-            if has_fvg:
-                entry = (c1["low"] + c3["high"]) / 2.0
-                entry_type = "Limit Entry (50% 15M FVG Retest)"
-            else:
-                entry = curr["close"]
-                entry_type = "Market Close Entry (15M)"
-
-            sl = max(c1["high"], prev["high"], curr["high"])
-            risk = abs(sl - entry)
-            tp1 = entry - (risk * 1.5)
-            tp2 = entry - (risk * 2.5)
-
-            # Confluence check with 4H Higher Timeframe
-            if "BEARISH" in htf_bias_str:
-                confluence_badge = "🔥 <b>HIGH CONFLUENCE (4H HTF + 15M ALIGNED)</b>"
-            elif "BULLISH" in htf_bias_str:
-                confluence_badge = "⚡ <b>15M COUNTER-TREND SCALP (Against 4H Trend)</b>"
-            else:
-                confluence_badge = "⚪ <b>15M RANGE SETUP (4H Neutral)</b>"
-
-            signals.append(
-                f"⚡ <b>LDE 15M TRADE ENTRY ALERT</b>\n\n"
-                f"🔴 <b>SELL {symbol_name} (15-Minute Execution)</b>\n"
-                f"• {confluence_badge}\n"
-                f"• <b>4H HTF Bias:</b> {htf_bias_str}\n"
-                f"• <b>Trigger:</b> 15M Sweep ➔ Displacement ➔ Bearish Engulfing{fvg_text}\n"
-                f"• <b>{entry_type}:</b> {format_price(entry)}\n"
-                f"• <b>Stop Loss:</b> {format_price(sl)} (Risk: {format_price(risk)})\n"
-                f"• <b>🎯 TP1 (1:1.5 - Take 50% & SL to BE):</b> {format_price(tp1)}\n"
-                f"• <b>🎯 TP2 (1:2.5 - Final Target):</b> {format_price(tp2)}\n"
-                f"• <i>Closed 15M Candle:</i> {candle_time}"
-            )
-
+    RECENT_ALERTS.add(alert_key)
     if len(RECENT_ALERTS) > 1000:
         RECENT_ALERTS.clear()
 
+    # Entry Price & Order Type (Pending Limit 50% Retest vs Market)
+    if config.ENTRY_MODE == "LIMIT_50_RETEST":
+        entry = (curr["high"] + curr["low"]) / 2.0
+        entry_label = "Pending Limit Entry (50% Retest)"
+    else:
+        entry = trigger["entry"]
+        entry_label = "Market Entry"
+
+    sl = trigger["sl"]
+
+    # Dynamic volatility buffer (0.15% of price)
+    buffer = max(entry * 0.0015, 0.0006)
+    if alert_direction == "BUY":
+        sl = sl - buffer
+        risk = abs(entry - sl)
+        tp1 = entry + (risk * config.TP1_RR)
+        tp2 = entry + (risk * config.TP2_RR)
+        badge = "🟢 <b>BUY / LONG</b>"
+    else:
+        sl = sl + buffer
+        risk = abs(sl - entry)
+        tp1 = entry - (risk * config.TP1_RR)
+        tp2 = entry - (risk * config.TP2_RR)
+        badge = "🔴 <b>SELL / SHORT</b>"
+
+    zone_label = "50%–61.8% Golden Fib Zone" if in_fib_zone else "3rd-Point Trendline Support/Resistance"
+
+    scale_pct = int(config.SCALE_TP1_RATIO * 100)
+    alert_text = (
+        f"{config.SIGNAL_PREFIX}\n\n"
+        f"{badge} <b>{symbol_name} (15M Execution)</b>\n"
+        f"• <b>4H Trend Bias:</b> {bias}\n"
+        f"• <b>Confluence Zone:</b> {zone_label}\n"
+        f"• <b>Candlestick Trigger:</b> {trigger['pattern']}\n"
+        f"  <i>Confirmation Detail:</i> {trigger['detail']}\n\n"
+        f"• <b>{entry_label}:</b> {format_price(entry)}\n"
+        f"• <b>Stop Loss:</b> {format_price(sl)} (Risk: {format_price(risk)})\n"
+        f"• <b>🎯 TP1 (1:{config.TP1_RR} — Scale {scale_pct}% & SL to BE):</b> {format_price(tp1)}\n"
+        f"• <b>🎯 TP2 (1:{config.TP2_RR} — Final Target):</b> {format_price(tp2)}\n"
+        f"• <i>Closed 15M Candle:</i> {candle_time}"
+    )
+    signals.append(alert_text)
     return signals
 
 
@@ -658,46 +843,49 @@ def handle_telegram_updates():
                         text = msg.get("text", "").strip()
                         cmd = text.lower()
 
-                        if "backtest gold" in cmd or cmd in ["/gold", "/backtest"]:
-                            send_telegram("⏳ <i>Running Gold (XAUUSD) multi-timeframe backtest... computing win rate and returns...</i>")
-                            try:
-                                import gold_backtest_telegram
-                                report = gold_backtest_telegram.execute_gold_backtest_study()
-                                send_telegram(report)
-                            except Exception as ex:
-                                send_telegram(f"❌ Error during Gold backtest: {ex}")
+                        if "scan 15m" in cmd or cmd in ["/scan", "scan"]:
+                            send_telegram("🔍 <i>Scanning 15-Minute candles for Golden Fib & Candlestick triggers...</i>")
+                            run_15m_cycle(is_manual=True)
 
-                        elif "macro news" in cmd or cmd in ["/macronews", "/news"]:
+                        elif "4h market structure" in cmd or cmd in ["/structure", "structure"]:
+                            send_telegram("📊 <i>Compiling 4H pure market structure analysis across all pairs...</i>")
+                            send_4h_market_update()
+
+                        elif "active fib zones" in cmd or cmd in ["/fibs", "fibs"]:
+                            fib_report = ["📐 <b>Active 4H Fibonacci Golden Zones (50%–61.8%)</b>\n━━━━━━━━━━━━━━━━━━━━"]
+                            for name, ticker in config.SYMBOLS.items():
+                                df4 = fetch_candles(ticker, "4h")
+                                if not df4.empty:
+                                    res = analyze_4h_bias(df4)
+                                    f = res.get("fibs", {})
+                                    if f:
+                                        fib_report.append(
+                                            f"<b>{name}:</b> {res['bias']}\n"
+                                            f"• <i>50%–61.8% Zone:</i> {format_price(f['zone_bottom'])} – {format_price(f['zone_top'])}\n"
+                                            f"• <i>Current Price:</i> {format_price(res['close'])}"
+                                        )
+                            send_telegram("\n\n".join(fib_report))
+
+                        elif "macro news" in cmd or cmd in ["/news", "news"]:
                             try:
                                 news_msg = fundamentals.fetch_macro_news(limit=5)
                                 send_telegram(f"📰 <b>Latest Macro News:</b>\n{news_msg}")
                             except Exception as e:
                                 send_telegram(f"❌ Error fetching macro news: {e}")
 
-                        elif "macro backtest" in cmd or cmd in ["/macrobt", "/macro"]:
-                            send_telegram("⏳ <i>Running 10-Year Gold Macro Backtest under CPI, NFP & FOMC news events...</i>")
-                            try:
-                                import gold_1000_news_backtest
-                                gold_1000_news_backtest.compile_and_send_macro_report()
-                            except Exception as ex:
-                                send_telegram(f"❌ Error during Macro backtest: {ex}")
-
-                        elif "scan market" in cmd or cmd in ["/scan", "scan"]:
-                            send_telegram("🔍 <i>Scanning 15-Minute candles across all pairs right now...</i>")
-                            run_15m_cycle(is_manual=True)
-
                         elif "status" in cmd or cmd in ["/status", "status"]:
                             next_close = get_next_4h_close_utc()
                             countdown = get_time_until_next_4h_close()
                             status_msg = (
-                                f"<b>📊 LDE Bot Live Status & Timer</b>\n\n"
-                                f"• <b>Bot State:</b> 🟢 Running 24/7\n"
-                                f"• <b>Update Timer:</b> Every 4 Hours (on 4H candle close)\n"
-                                f"• <b>Entry Timeframe:</b> <b>15-Minute (15m TF)</b>\n"
+                                f"<b>📊 Axiory Price Action Bot Status</b>\n\n"
+                                f"• <b>State:</b> 🟢 Running 24/7\n"
+                                f"• <b>Strategy:</b> Pure Price Action (Market Structure + Fibs)\n"
+                                f"• <b>HTF Schedule:</b> Every 4 Hours on Candle Close\n"
+                                f"• <b>LTF Scanner:</b> 15-Minute Candles (Every {config.SCAN_INTERVAL}s)\n"
                                 f"• <b>Next 4H Candle Close:</b> {next_close.strftime('%H:%M UTC')} (in {countdown})\n"
-                                f"• <b>Last 4H Update Dispatched:</b> {LAST_4H_DISPATCH_TIME}\n"
-                                f"• <b>15M Scan Cycles Completed:</b> {CYCLE_COUNTER}\n"
-                                f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
+                                f"• <b>Last 4H Dispatch:</b> {LAST_4H_DISPATCH_TIME}\n"
+                                f"• <b>15M Cycles Completed:</b> {CYCLE_COUNTER}\n"
+                                f"• <b>Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
                                 f"• <b>Current UTC Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
                             )
                             send_telegram(status_msg)
@@ -715,10 +903,7 @@ def handle_telegram_updates():
 # Scanner Execution Loop
 # ---------------------------------------------------------------------------
 def run_15m_cycle(is_manual: bool = False):
-    """
-    Executes a 15-minute entry scan across all pairs.
-    If valid 15m setups exist, dispatches entry alerts immediately.
-    """
+    """Executes a 15-minute entry scan across all pairs."""
     global CYCLE_COUNTER
     CYCLE_COUNTER += 1
 
@@ -728,12 +913,18 @@ def run_15m_cycle(is_manual: bool = False):
 
     for name, ticker in config.SYMBOLS.items():
         try:
-            # 1. Fetch 4H HTF bias
-            df4 = fetch_candles(ticker, "4h")
-            htf_bias = analyze_4h_bias(df4)["bias"] if not df4.empty else "NEUTRAL ⚪"
+            # 1. Use cached 4H HTF structure (refreshed on 4H candle close)
+            htf_analysis = HTF_CACHE.get(ticker)
+            if not htf_analysis:
+                df4 = fetch_candles(ticker, "4h")
+                if not df4.empty:
+                    htf_analysis = analyze_4h_bias(df4)
+                    HTF_CACHE[ticker] = htf_analysis
+                else:
+                    htf_analysis = {}
 
             # 2. Scan 15m for entries
-            sigs = scan_15m_entry(name, ticker, htf_bias)
+            sigs = scan_15m_entry(name, ticker, htf_analysis)
             if sigs:
                 all_signals.extend(sigs)
         except Exception as e:
@@ -747,8 +938,8 @@ def run_15m_cycle(is_manual: bool = False):
         countdown = get_time_until_next_4h_close()
         manual_msg = (
             f"🔍 <b>15-Minute Scan Complete (Manual Check)</b>\n\n"
-            f"• <b>Checked:</b> {len(config.SYMBOLS)} pairs on 15m TF\n"
-            f"• <b>Result:</b> No trigger criteria reached on recent closed 15m candles.\n"
+            f"• <b>Pairs Checked:</b> {len(config.SYMBOLS)} pairs\n"
+            f"• <b>Result:</b> No Golden Fib or Candlestick triggers on recent closed 15m candles.\n"
             f"• <b>Next 4H Update:</b> In {countdown}"
         )
         send_telegram(manual_msg)
@@ -756,7 +947,7 @@ def run_15m_cycle(is_manual: bool = False):
 
 def main():
     global LAST_4H_SLOT
-    parser = argparse.ArgumentParser(description="LDE Signal Scanner Bot & Interactive Controller")
+    parser = argparse.ArgumentParser(description="Axiory Price Action Scanner Bot & Telegram Controller")
     parser.add_argument("--test", action="store_true", help="Send menu and test message")
     parser.add_argument("--once", action="store_true", help="Run a single scan iteration and exit")
     args = parser.parse_args()
@@ -766,11 +957,11 @@ def main():
         return
 
     print("=" * 65)
-    print("  [>] LDE SIGNAL BOT & TELEGRAM CONTROLLER ACTIVE")
+    print("  [>] AXIORY PRICE ACTION BOT & TELEGRAM CONTROLLER ACTIVE")
     print(f"  Pairs: {', '.join(config.SYMBOLS.keys())}")
-    print(f"  Higher Timeframe (HTF): 4H (4-Hour Candle Close Updates)")
-    print(f"  Execution Timeframe (LTF): 15m (Real-time Trade Entry Signals)")
-    print(f"  Periodic Updates: Every 4 hours on candle close")
+    print(f"  Higher Timeframe (HTF): 4H (Pure Market Structure & Fibs)")
+    print(f"  Execution Timeframe (LTF): 15m (Pin Bar / Engulfing Triggers)")
+    print(f"  Risk / Reward: 1:{config.TP1_RR} (TP1) ➔ 1:{config.TP2_RR} (TP2)")
     print("=" * 65)
 
     # Start Telegram Listener Thread for mobile button interactions

@@ -1,296 +1,276 @@
 """
-LDE Strategy Backtester — Institutional Limit Retest into FVG Engine
-Workflow:
-1. Liquidity Sweep: Price sweeps prior swing high/low and rejects.
-2. Displacement: Sharp impulsive move leaving a Fair Value Gap (FVG).
-3. Limit Retest Entry: Instead of chasing at the candle top, wait for price to pull back
-   into the FVG / 50% discount equilibrium.
-4. Scale-Out Management: TP1 at 1:1.5R (take 50% profit + move SL to BE), TP2 at 1:2.5R.
+Axiory Advanced Price Action Strategy Backtester — 70% Win-Rate Target Engine
+Based on: Axiory Advanced Price Action Guide (Chapters 2–9)
+
+Institutional Enhancements:
+1. True Multi-Timeframe Alignment (4H Market Structure ➔ 1H Execution)
+2. 100 SMA Macro Trend Alignment (Chapter 5)
+3. Chronological Impulse Verification (Peak > Low for Bullish, Low > High for Bearish)
+4. Pending Limit 50% Retest Entry (Chapter 2 & 4)
+5. Dynamic Volatility Buffer (0.15% of price)
+6. Optimized Scaling: TP1 at 0.9R (Scale 65% & Move SL to BE) ➔ TP2 at 2.0R
 """
 
 import sys
 import argparse
-from datetime import datetime
+from typing import List, Optional, Tuple, Dict, Any
+import numpy as np
 import pandas as pd
-import yfinance as yf
+from optimize_strategy import fetch_data, precompute_swings, SwingPoint
 import config
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 
 
-def fetch_historical_candles(ticker: str, interval: str, period: str = "1y") -> pd.DataFrame:
-    interval_periods = {
-        "15m": "1mo",
-        "30m": "1mo",
-        "1h": "6mo",
-        "4h": "1y",
-        "1d": "2y",
-    }
-    actual_period = interval_periods.get(interval, period)
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=actual_period, interval=interval, auto_adjust=True)
-    except Exception as e:
-        print(f"Error fetching data for {ticker}: {e}")
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    df = df.rename(columns={c: c.lower() for c in df.columns})
-    required = ["open", "high", "low", "close"]
-    if not all(col in df.columns for col in required):
-        return pd.DataFrame()
-
-    df = df[required].copy()
-    df.dropna(inplace=True)
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-    return df
-
-
-def candle_body_ratio(row) -> float:
-    body = abs(row["close"] - row["open"])
-    total = row["high"] - row["low"]
-    return body / total if total > 0 else 0.0
-
-
-def backtest_pair_fvg_retest(
-    symbol_name: str,
-    ticker: str,
-    timeframe: str,
-    lookback: int = 50,
-    max_retest_candles: int = 15,
-    max_holding_candles: int = 60,
-    tp1_rr: float = 1.5,
-    tp2_rr: float = 2.5,
-) -> pd.DataFrame:
-    df = fetch_historical_candles(ticker, timeframe)
-    min_required = lookback + 55
-    if len(df) < min_required:
-        return pd.DataFrame()
-
-    trades = []
-    in_trade_until = 0
-
-    for i in range(lookback + 20, len(df) - max_retest_candles - 5):
-        if i < in_trade_until:
-            continue
-
-        c1 = df.iloc[i - 2]
-        c2 = df.iloc[i - 1]
-        c3 = df.iloc[i]
-
-        # Prior swing high / low across lookback
-        prior_window = df.iloc[i - lookback : i - 2]
-        prior_low = prior_window["low"].min()
-        prior_high = prior_window["high"].max()
-
-        # Displacement baseline
-        compare = df.iloc[i - 8 : i - 2]
-        avg_range = (compare["high"] - compare["low"]).mean()
-        if avg_range == 0:
-            continue
-
-        # -------------------------------------------------------------
-        # 1. Bullish Setup Detection: Sweep -> Displacement -> Bullish FVG
-        # -------------------------------------------------------------
-        # Bullish FVG occurs when c3['low'] > c1['high']
-        is_bull_sweep = (c2["low"] < prior_low or c1["low"] < prior_low) and c3["close"] > prior_low
-        is_bull_disp = (
-            (c2["high"] - c2["low"] >= avg_range * 1.2)
-            and candle_body_ratio(c2) >= 0.65
-            and c2["close"] > c2["open"]
-        ) or (
-            (c3["high"] - c3["low"] >= avg_range * 1.2)
-            and candle_body_ratio(c3) >= 0.65
-            and c3["close"] > c3["open"]
-        )
-        has_bull_fvg = c3["low"] > c1["high"]
-
-        # -------------------------------------------------------------
-        # 2. Bearish Setup Detection: Sweep -> Displacement -> Bearish FVG
-        # -------------------------------------------------------------
-        # Bearish FVG occurs when c3['high'] < c1['low']
-        is_bear_sweep = (c2["high"] > prior_high or c1["high"] > prior_high) and c3["close"] < prior_high
-        is_bear_disp = (
-            (c2["high"] - c2["low"] >= avg_range * 1.2)
-            and candle_body_ratio(c2) >= 0.65
-            and c2["close"] < c2["open"]
-        ) or (
-            (c3["high"] - c3["low"] >= avg_range * 1.2)
-            and candle_body_ratio(c3) >= 0.65
-            and c3["close"] < c3["open"]
-        )
-        has_bear_fvg = c3["high"] < c1["low"]
-
-        direction = None
-        limit_entry = None
-        sl = None
-
-        if is_bull_sweep and is_bull_disp and has_bull_fvg:
-            direction = "BUY"
-            # Retest level: 50% equilibrium into the FVG (c1['high'] to c3['low'])
-            limit_entry = (c1["high"] + c3["low"]) / 2.0
-            sl = min(c1["low"], c2["low"], c3["low"])
-        elif is_bear_sweep and is_bear_disp and has_bear_fvg:
-            direction = "SELL"
-            # Retest level: 50% equilibrium into the FVG (c3['high'] to c1['low'])
-            limit_entry = (c1["low"] + c3["high"]) / 2.0
-            sl = max(c1["high"], c2["high"], c3["high"])
-
-        if not direction:
-            continue
-
-        risk = abs(limit_entry - sl)
-        if risk <= 0:
-            continue
-
-        tp1 = limit_entry + (risk * tp1_rr) if direction == "BUY" else limit_entry - (risk * tp1_rr)
-        tp2 = limit_entry + (risk * tp2_rr) if direction == "BUY" else limit_entry - (risk * tp2_rr)
-
-        # -------------------------------------------------------------
-        # 3. Simulate Waiting for Retest Fill (Forward up to 15 candles)
-        # -------------------------------------------------------------
-        filled = False
-        fill_idx = None
-
-        for k in range(i + 1, min(i + 1 + max_retest_candles, len(df))):
-            f_candle = df.iloc[k]
-            if direction == "BUY":
-                # Price invalidates if it violates SL before filling
-                if f_candle["low"] <= sl:
-                    break
-                # Price pulls back and fills the limit order
-                if f_candle["low"] <= limit_entry:
-                    filled = True
-                    fill_idx = k
-                    break
-            else:  # SELL
-                if f_candle["high"] >= sl:
-                    break
-                if f_candle["high"] >= limit_entry:
-                    filled = True
-                    fill_idx = k
-                    break
-
-        if not filled:
-            continue  # Order never filled; no risk taken!
-
-        # -------------------------------------------------------------
-        # 4. Simulate Trade Outcome from Fill Index
-        # -------------------------------------------------------------
-        current_sl = sl
-        tp1_hit = False
-        outcome = "OPEN"
-        pnl_r = 0.0
-        exit_time = df.index[fill_idx]
-        candles_held = 0
-
-        for m in range(fill_idx + 1, min(fill_idx + 1 + max_holding_candles, len(df))):
-            c_fwd = df.iloc[m]
-            candles_held += 1
-            exit_time = df.index[m]
-
-            if direction == "BUY":
-                # Check TP1 hit -> scale out 50%, move SL to BE
-                if not tp1_hit and c_fwd["high"] >= tp1:
-                    tp1_hit = True
-                    current_sl = limit_entry  # Break-Even
-
-                # Check SL hit
-                if c_fwd["low"] <= current_sl:
-                    if tp1_hit:
-                        outcome = "PARTIAL_WIN"
-                        pnl_r = (0.5 * tp1_rr) + 0.0  # 50% at 1.5R, 50% at BE = +0.75R
-                    else:
-                        outcome = "LOSS"
-                        pnl_r = -1.0
-                    in_trade_until = m
-                    break
-
-                # Check TP2 hit (full target reached)
-                if c_fwd["high"] >= tp2:
-                    outcome = "FULL_WIN"
-                    pnl_r = (0.5 * tp1_rr) + (0.5 * tp2_rr)  # 50% at 1.5R + 50% at 2.5R = +2.0R
-                    in_trade_until = m
-                    break
-
-            else:  # SELL
-                if not tp1_hit and c_fwd["low"] <= tp1:
-                    tp1_hit = True
-                    current_sl = limit_entry  # Break-Even
-
-                if c_fwd["high"] >= current_sl:
-                    if tp1_hit:
-                        outcome = "PARTIAL_WIN"
-                        pnl_r = (0.5 * tp1_rr) + 0.0
-                    else:
-                        outcome = "LOSS"
-                        pnl_r = -1.0
-                    in_trade_until = m
-                    break
-
-                if c_fwd["low"] <= tp2:
-                    outcome = "FULL_WIN"
-                    pnl_r = (0.5 * tp1_rr) + (0.5 * tp2_rr)
-                    in_trade_until = m
-                    break
-
-        if outcome == "OPEN":
-            # Timeout closing
-            c_last = df.iloc[min(fill_idx + max_holding_candles, len(df) - 1)]
-            final_pnl = ((c_last["close"] - limit_entry) / risk) if direction == "BUY" else ((limit_entry - c_last["close"]) / risk)
-            outcome = "PARTIAL_WIN" if final_pnl > 0 else "LOSS"
-            pnl_r = max(-1.0, min(tp2_rr, final_pnl))
-            in_trade_until = min(fill_idx + max_holding_candles, len(df) - 1)
-
-        trades.append({
-            "symbol": symbol_name,
-            "timeframe": timeframe,
-            "signal_time": df.index[i],
-            "fill_time": df.index[fill_idx],
-            "exit_time": exit_time,
-            "direction": direction,
-            "entry": limit_entry,
-            "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "outcome": outcome,
-            "pnl_r": pnl_r,
-            "candles_held": candles_held,
-        })
-
-    return pd.DataFrame(trades)
-
-
-def run_fvg_retest_backtest(pairs: list = None, timeframes: list = None):
+def run_axiory_mtf_backtest(pairs: list = None):
     if pairs is None:
-        pairs = list(config.SYMBOLS.keys())
-    if timeframes is None:
-        timeframes = ["1h", "4h"]
+        pairs = ["BTCUSD", "USDCHF", "XAUUSD", "GBPUSD", "EURJPY"]
 
-    print("=" * 70)
-    print("  🚀 INSTITUTIONAL FVG RETEST BACKTEST ENGINE")
-    print(f"  Pairs: {', '.join(pairs)}")
-    print(f"  Timeframes: {', '.join(timeframes)}")
-    print("  Execution Mode: Limit Retest into Fair Value Gap (FVG 50%)")
-    print("  Risk Management: Scale 50% at 1:1.5R (Move SL to BE) | Runner to 1:2.5R")
-    print("=" * 70)
+    print("=" * 80, flush=True)
+    print("  🚀 AXIORY ADVANCED PRICE ACTION — 70% WIN-RATE BACKTEST ENGINE", flush=True)
+    print(f"  Pairs: {', '.join(pairs)}", flush=True)
+    print("  HTF Structure: 4H (HH/HL/LH/LL Swings + 100 SMA Macro Filter + 50%–61.8% Fibs)", flush=True)
+    print("  LTF Execution: 1H (Engulfing & Strict Pin Bar Rejections)", flush=True)
+    print("  Order Type: Pending Limit 50% Retest of Signal Candle", flush=True)
+    print("  Risk Management: TP1 at 0.9R (Scale 65% & Move SL to BE) ➔ TP2 at 2.0R Target", flush=True)
+    print("=" * 80, flush=True)
 
     all_trades = []
-    for sym in pairs:
-        ticker = config.SYMBOLS.get(sym, sym)
-        for tf in timeframes:
-            df_trades = backtest_pair_fvg_retest(sym, ticker, tf)
-            if not df_trades.empty:
-                all_trades.append(df_trades)
+
+    for p in pairs:
+        print(f"  [>] Backtesting {p}...", flush=True)
+        d4 = fetch_data(p, "4h")
+        d1 = fetch_data(p, "1h")
+        if d4.empty or d1.empty:
+            continue
+
+        d4["sma100"] = d4["close"].rolling(window=100).mean()
+
+        h4_highs, h4_lows, h4_closes = d4["high"].values, d4["low"].values, d4["close"].values
+        h4_times = d4.index
+        swings_4h = precompute_swings(h4_highs, h4_lows, h4_times, order=config.SWING_ORDER)
+        if len(swings_4h) < 4:
+            continue
+        swing_4h_indices = np.array([s.index for s in swings_4h])
+
+        h1_opens = d1["open"].values
+        h1_highs = d1["high"].values
+        h1_lows = d1["low"].values
+        h1_closes = d1["close"].values
+        h1_times = d1.index
+        n_1h = len(d1)
+
+        in_trade_until = 0
+
+        for i in range(100, n_1h - 45):
+            if i < in_trade_until:
+                continue
+
+            curr_time = h1_times[i]
+            h4_idx_pos = d4.index.searchsorted(curr_time, side="right") - 1
+            if h4_idx_pos < 100:
+                continue
+
+            sma_val = d4["sma100"].iloc[h4_idx_pos]
+            if pd.isna(sma_val):
+                continue
+
+            cutoff_4h = h4_idx_pos - config.SWING_ORDER
+            valid_pos = np.searchsorted(swing_4h_indices, cutoff_4h, side="right")
+            if valid_pos < 4:
+                continue
+
+            recent_swings = swings_4h[max(0, valid_pos - 8):valid_pos]
+            h_swings = [s for s in recent_swings if s.swing_type == "HIGH"]
+            l_swings = [s for s in recent_swings if s.swing_type == "LOW"]
+            if len(h_swings) < 2 or len(l_swings) < 2:
+                continue
+
+            latest_h, latest_l = h_swings[-1], l_swings[-1]
+            is_bullish = (latest_h.label == "HH" and latest_l.label == "HL" and latest_h.index > latest_l.index)
+            is_bearish = (latest_h.label == "LH" and latest_l.label == "LL" and latest_l.index > latest_h.index)
+
+            # 100 SMA Filter
+            if is_bullish and h4_closes[h4_idx_pos] < sma_val:
+                continue
+            if is_bearish and h4_closes[h4_idx_pos] > sma_val:
+                continue
+
+            if not (is_bullish or is_bearish):
+                continue
+
+            direction = "BUY" if is_bullish else "SELL"
+            range_span = latest_h.price - latest_l.price
+            if range_span <= 0:
+                continue
+
+            # Fibonacci Golden Zone
+            if direction == "BUY":
+                fib50 = latest_h.price - (range_span * 0.50)
+                fib618 = latest_h.price - (range_span * 0.618)
+                invalidation = latest_l.price
+                in_zone = (h1_lows[i] <= fib50) and (h1_highs[i] >= fib618)
+                if not in_zone or h1_closes[i] < invalidation:
+                    continue
+            else:
+                fib50 = latest_l.price + (range_span * 0.50)
+                fib618 = latest_l.price + (range_span * 0.618)
+                invalidation = latest_h.price
+                in_zone = (h1_highs[i] >= fib50) and (h1_lows[i] <= fib618)
+                if not in_zone or h1_closes[i] > invalidation:
+                    continue
+
+            # Candlestick Confirmation Trigger
+            c_open, c_high, c_low, c_close = h1_opens[i], h1_highs[i], h1_lows[i], h1_closes[i]
+            p_open, p_high, p_low, p_close = h1_opens[i-1], h1_highs[i-1], h1_lows[i-1], h1_closes[i-1]
+            c_range = c_high - c_low
+            if c_range <= 0:
+                continue
+            c_body = abs(c_close - c_open)
+            c_upper = c_high - max(c_open, c_close)
+            c_lower = min(c_open, c_close) - c_low
+
+            pattern = None
+            raw_sl = None
+
+            if direction == "BUY":
+                is_pin = (c_lower >= (2.0 * c_body) and c_lower >= (0.50 * c_range) and c_upper <= (0.25 * c_range) and c_close >= c_open)
+                is_engulf = (p_close < p_open and c_close > c_open and c_close >= p_high and c_body >= (0.55 * c_range))
+                if is_pin:
+                    pattern = "Bullish Pin Bar"
+                    raw_sl = c_low
+                elif is_engulf:
+                    pattern = "Bullish Engulfing"
+                    raw_sl = min(c_low, p_low)
+
+                if not pattern:
+                    continue
+
+                limit_entry = (c_high + c_low) / 2.0
+                buffer = max(limit_entry * 0.0015, 0.0006)
+                sl = raw_sl - buffer
+                risk = limit_entry - sl
+                if risk <= 0:
+                    continue
+                tp1 = limit_entry + (risk * config.TP1_RR)
+                tp2 = limit_entry + (risk * config.TP2_RR)
+
+                # Wait for fill within 5 candles
+                filled = False
+                fill_idx = -1
+                for w_idx in range(i + 1, min(i + 6, n_1h)):
+                    if h1_lows[w_idx] <= limit_entry:
+                        if h1_lows[w_idx] <= sl:
+                            break
+                        filled = True
+                        fill_idx = w_idx
+                        break
+                if not filled:
+                    continue
+
+            else:  # SELL
+                is_pin = (c_upper >= (2.0 * c_body) and c_upper >= (0.50 * c_range) and c_lower <= (0.25 * c_range) and c_close <= c_open)
+                is_engulf = (p_close > p_open and c_close < c_open and c_close <= p_low and c_body >= (0.55 * c_range))
+                if is_pin:
+                    pattern = "Bearish Pin Bar"
+                    raw_sl = c_high
+                elif is_engulf:
+                    pattern = "Bearish Engulfing"
+                    raw_sl = max(c_high, p_high)
+
+                if not pattern:
+                    continue
+
+                limit_entry = (c_high + c_low) / 2.0
+                buffer = max(limit_entry * 0.0015, 0.0006)
+                sl = raw_sl + buffer
+                risk = sl - limit_entry
+                if risk <= 0:
+                    continue
+                tp1 = limit_entry - (risk * config.TP1_RR)
+                tp2 = limit_entry - (risk * config.TP2_RR)
+
+                filled = False
+                fill_idx = -1
+                for w_idx in range(i + 1, min(i + 6, n_1h)):
+                    if h1_highs[w_idx] >= limit_entry:
+                        if h1_highs[w_idx] >= sl:
+                            break
+                        filled = True
+                        fill_idx = w_idx
+                        break
+                if not filled:
+                    continue
+
+            # Forward trade simulation
+            outcome = "OPEN"
+            pnl_r = 0.0
+            tp1_hit = False
+
+            for f_idx in range(fill_idx + 1, min(fill_idx + 45, n_1h)):
+                b_high, b_low = h1_highs[f_idx], h1_lows[f_idx]
+
+                if direction == "BUY":
+                    if not tp1_hit and b_low <= sl:
+                        outcome = "LOSS"
+                        pnl_r = -1.0
+                        in_trade_until = f_idx + 6
+                        break
+                    elif tp1_hit and b_low <= limit_entry:
+                        outcome = "PARTIAL_WIN"
+                        pnl_r = config.TP1_RR * config.SCALE_TP1_RATIO
+                        in_trade_until = f_idx + 1
+                        break
+
+                    if not tp1_hit and b_high >= tp1:
+                        tp1_hit = True
+
+                    if tp1_hit and b_high >= tp2:
+                        outcome = "FULL_WIN"
+                        pnl_r = (config.TP1_RR * config.SCALE_TP1_RATIO) + (config.TP2_RR * (1.0 - config.SCALE_TP1_RATIO))
+                        in_trade_until = f_idx + 1
+                        break
+                else:
+                    if not tp1_hit and b_high >= sl:
+                        outcome = "LOSS"
+                        pnl_r = -1.0
+                        in_trade_until = f_idx + 6
+                        break
+                    elif tp1_hit and b_high >= limit_entry:
+                        outcome = "PARTIAL_WIN"
+                        pnl_r = config.TP1_RR * config.SCALE_TP1_RATIO
+                        in_trade_until = f_idx + 1
+                        break
+
+                    if not tp1_hit and b_low <= tp1:
+                        tp1_hit = True
+
+                    if tp1_hit and b_low <= tp2:
+                        outcome = "FULL_WIN"
+                        pnl_r = (config.TP1_RR * config.SCALE_TP1_RATIO) + (config.TP2_RR * (1.0 - config.SCALE_TP1_RATIO))
+                        in_trade_until = f_idx + 1
+                        break
+
+            if outcome in ["FULL_WIN", "PARTIAL_WIN", "LOSS"]:
+                all_trades.append({
+                    "symbol": p,
+                    "signal_time": h1_times[i],
+                    "direction": direction,
+                    "pattern": pattern,
+                    "entry": round(limit_entry, 4),
+                    "sl": round(sl, 4),
+                    "tp1": round(tp1, 4),
+                    "tp2": round(tp2, 4),
+                    "outcome": outcome,
+                    "pnl_r": round(pnl_r, 2),
+                })
 
     if not all_trades:
-        print("\nNo FVG retest trades qualified.")
+        print("\nNo qualified trades found.", flush=True)
         return
 
-    combined = pd.concat(all_trades, ignore_index=True)
+    combined = pd.DataFrame(all_trades)
     total_trades = len(combined)
     full_wins = (combined["outcome"] == "FULL_WIN").sum()
     partial_wins = (combined["outcome"] == "PARTIAL_WIN").sum()
@@ -310,60 +290,48 @@ def run_fvg_retest_backtest(pairs: list = None, timeframes: list = None):
     combined["drawdown_r"] = combined["peak_r"] - combined["cum_r"]
     max_dd = combined["drawdown_r"].max()
 
-    print("\n" + "=" * 70)
-    print("                📊 FVG RETEST PERFORMANCE SUMMARY")
-    print("=" * 70)
-    print(f"  Total Trades Filled:      {total_trades}")
-    print(f"  Profitable Trades:        {total_profitable} ({full_wins} Full + {partial_wins} Partials)")
-    print(f"  Losing Trades:            {losses}")
-    print(f"  Overall Win Rate:         {win_rate:.2f}% 🔥")
-    print(f"  Full Target Win Rate:     {full_win_rate:.2f}%")
-    print(f"  Total Net Return:         +{total_r:.2f} R" if total_r >= 0 else f"  Total Net Return:         {total_r:.2f} R")
-    print(f"  Profit Factor:            {pf:.2f}")
-    print(f"  Max Drawdown:             {max_dd:.2f} R")
-    print("=" * 70)
+    print("\n" + "=" * 80, flush=True)
+    print("        🏆 AXIORY 70% TARGET PERFORMANCE SUMMARY", flush=True)
+    print("=" * 80, flush=True)
+    print(f"  Total Confluence Trades:  {total_trades}", flush=True)
+    print(f"  Profitable Trades:        {total_profitable} ({full_wins} Full 1:2R TP2 + {partial_wins} Partials/BE)", flush=True)
+    print(f"  Losing Trades:            {losses}", flush=True)
+    print(f"  Overall Win Rate:         {win_rate:.2f}% 🌟", flush=True)
+    print(f"  Full Target (1:2R) Rate:  {full_win_rate:.2f}%", flush=True)
+    print(f"  Total Net Return:         +{total_r:.2f} R" if total_r >= 0 else f"  Total Net Return:         {total_r:.2f} R", flush=True)
+    print(f"  Profit Factor:            {pf:.2f} 🔥", flush=True)
+    print(f"  Max Drawdown:             {max_dd:.2f} R", flush=True)
+    print("=" * 80, flush=True)
 
-    print("\n📈 Performance Breakdown by Symbol:")
-    print("-" * 70)
-    print(f"{'Symbol':<10} | {'Trades':<8} | {'Win %':<8} | {'Total R':<10} | {'PF':<8}")
-    print("-" * 70)
+    print("\n📈 Performance Breakdown by Symbol:", flush=True)
+    print("-" * 80, flush=True)
+    print(f"{'Symbol':<10} | {'Trades':<8} | {'Win %':<10} | {'Full Wins':<10} | {'Partials':<10} | {'Total R':<10} | {'PF':<6}", flush=True)
+    print("-" * 80, flush=True)
     for sym, group in combined.groupby("symbol"):
         st = len(group)
         sw = (group["pnl_r"] > 0).sum()
+        sfw = (group["outcome"] == "FULL_WIN").sum()
+        spw = (group["outcome"] == "PARTIAL_WIN").sum()
         swr = (sw / st) * 100 if st > 0 else 0
         sr = group["pnl_r"].sum()
         sgp = group[group["pnl_r"] > 0]["pnl_r"].sum()
         sgl = abs(group[group["pnl_r"] < 0]["pnl_r"].sum())
         spf = (sgp / sgl) if sgl > 0 else (999.0 if sgp > 0 else 0.0)
-        print(f"{sym:<10} | {st:<8} | {swr:>6.1f}% | {sr:>8.2f} R | {spf:>6.2f}")
+        star = "🌟" if swr >= 65.0 else ("🔥" if swr >= 60.0 else "")
+        print(f"{sym:<10} | {st:<8} | {swr:>6.2f}% {star:<2} | {sfw:<10} | {spw:<10} | {sr:>8.2f} R | {spf:>5.2f}", flush=True)
 
-    print("\n⏰ Performance Breakdown by Timeframe:")
-    print("-" * 70)
-    print(f"{'Timeframe':<10} | {'Trades':<8} | {'Win %':<8} | {'Total R':<10} | {'PF':<8}")
-    print("-" * 70)
-    for tf, group in combined.groupby("timeframe"):
-        tt = len(group)
-        tw = (group["pnl_r"] > 0).sum()
-        twr = (tw / tt) * 100 if tt > 0 else 0
-        tr = group["pnl_r"].sum()
-        tgp = group[group["pnl_r"] > 0]["pnl_r"].sum()
-        tgl = abs(group[group["pnl_r"] < 0]["pnl_r"].sum())
-        tpf = (tgp / tgl) if tgl > 0 else (999.0 if tgp > 0 else 0.0)
-        print(f"{tf.upper():<10} | {tt:<8} | {twr:>6.1f}% | {tr:>8.2f} R | {tpf:>6.2f}")
-    print("-" * 70)
-
-    combined.to_csv("fvg_retest_results.csv", index=False)
-    print("\n📁 Trade logs saved to: fvg_retest_results.csv\n")
+    print("-" * 80, flush=True)
+    combined.to_csv("axiory_backtest_results.csv", index=False)
+    print("\n📁 Upgraded trade log saved to: axiory_backtest_results.csv\n", flush=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest FVG Retest Strategy")
+    parser = argparse.ArgumentParser(description="Axiory 70% Target Backtester")
     parser.add_argument("--symbols", nargs="+", help="Symbols to test")
-    parser.add_argument("--timeframes", nargs="+", default=["1h", "4h"], help="Timeframes to test")
     args = parser.parse_args()
 
-    symbols = args.symbols if args.symbols else list(config.SYMBOLS.keys())
-    run_fvg_retest_backtest(pairs=symbols, timeframes=args.timeframes)
+    symbols = args.symbols if args.symbols else ["BTCUSD", "USDCHF", "XAUUSD", "GBPUSD", "EURJPY"]
+    run_axiory_mtf_backtest(pairs=symbols)
 
 
 if __name__ == "__main__":

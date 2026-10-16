@@ -1,25 +1,40 @@
-# LDE Signal Bot
+# Axiory Advanced Price Action Signal Bot
 
-Signal-only bot for **Liquidity Sweep -> Displacement -> Engulfing (LDE)** setups.
-Sends real-time formatted HTML alerts to Telegram. Does **not** execute trades.
+Signal-only Telegram bot built on the **Axiory Advanced Price Action Guide**.
+Sends real-time formatted HTML alerts to Telegram based on **pure market structure**, **Fibonacci retracements**, and **candlestick rejection confirmation**. Does **not** execute trades.
 
 ---
 
-## 📊 Multi-Timeframe Strategy Architecture
+## 📊 Strategy Architecture
+
 - **Higher Timeframe (HTF): 4H (4-Hour Candle Close)**
-  - Tracks higher-timeframe trend bias, 50 EMA, market structure, sweeps, and 4H Fair Value Gaps (FVGs).
-  - Automatically compiles and dispatches a comprehensive multi-pair market update after every 4-hour candle close (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC).
-- **Execution Timeframe (LTF): 15m (15-Minute Entries)**
-  - Continuously scans 15m candles in real-time.
-  - Takes institutional entries: 15m Sweep ➔ Displacement ➔ Engulfing / 50% FVG Retest.
-  - Cross-checks entries against 4H bias to flag `🔥 High Confluence (4H + 15M Aligned)` setups.
-  - Sends immediate trade alerts with Entry, Stop Loss, TP1 (1:1.5R scale 50%), and TP2 (1:2.5R).
+  - **Pure Market Structure:** Tracks Higher Highs (HH), Higher Lows (HL), Lower Highs (LH), Lower Lows (LL) — *no lagging indicators*.
+  - **Fibonacci Golden Zone:** Calculates 50.0% – 61.8% discount/premium retracement levels for the active impulse leg.
+  - **Break of Structure (BOS):** Detects early trend reversals when price closes beyond the prior swing structural level.
+  - **Trendline 3rd-Point:** Projects multi-point trendline support and resistance.
+  - Automatically dispatches a comprehensive multi-pair market update after every 4-hour candle close (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC).
+
+- **Execution Timeframe (LTF): 15m (15-Minute Rejection Entries)**
+  - Continuously monitors 15m candles in real-time.
+  - Verifies price is actively testing the **4H 50%–61.8% Golden Zone** or **Trendline**.
+  - Requires completed candlestick confirmation from Chapter 9 Cheat Sheet:
+    - **Bullish / Bearish Pin Bar** (Hammer / Shooting Star with long wick $\ge 50\%$)
+    - **Bullish / Bearish Engulfing**
+    - **Morning Star / Evening Star** (3-candle reversal)
+  - Dispatches trade alerts with Entry, Stop Loss (beyond wick), TP1 (1:1.5R scale 50% & BE), and TP2 (1:3.0R target).
 
 ---
 
 ## ⚙️ Setup & Configuration
 
-### 1. Telegram Bot Setup
+### 1. Twelve Data API Setup
+1. Sign up at [twelvedata.com](https://twelvedata.com/) and copy your API key.
+2. In [config.py](config.py), set:
+   ```python
+   TWELVEDATA_API_KEY = "YOUR_API_KEY"
+   ```
+
+### 2. Telegram Bot Setup
 1. Create a bot with [@BotFather](https://t.me/BotFather) on Telegram and copy your API Token.
 2. Open Telegram and send `/start` or any message to your new bot.
 3. Find your numeric Telegram Chat ID using [@userinfobot](https://t.me/userinfobot).
@@ -29,37 +44,35 @@ Sends real-time formatted HTML alerts to Telegram. Does **not** execute trades.
    TELEGRAM_CHAT_ID = "YOUR_NUMERIC_CHAT_ID"
    ```
 
-### 2. Verify Bot Connectivity
+### 3. Verify Bot Connectivity
 Test your Telegram setup directly from the command line:
 ```bash
 python signal_bot.py --test
 ```
 
-### 3. Run the Bot & Mobile Controller
+### 4. Run the Bot & Mobile Controller
 - **Run the full interactive bot:**
   ```bash
   python signal_bot.py
   ```
-  *(Sends the 4H market update after every 4H candle close, monitors 15m candles for entry triggers, and maintains persistent phone buttons!)*
 
 ---
 
 ## 📱 Mobile Interactive Telegram Buttons
-When running `signal_bot.py`, your Telegram chat will feature interactive inline buttons:
-- 🔘 **[📊 Backtest Gold (Multi-TF)]**: Runs multi-year Gold backtests and replies with win rate & profit factor immediately.
-- 🔘 **[⚡ Macro News Backtest]**: Tests Gold performance during high-impact US CPI, NFP & FOMC events.
-- 🔘 **[🔍 Scan Market Now]**: Triggers an instant live market scan across all pairs.
-- 🔘 **[ℹ️ Bot Status]**: Reports current uptime, active tickers, and lookback configuration.
-- You can also send `/menu`, `/backtest`, or `/scan` directly as text commands!
+When running `signal_bot.py`, your Telegram chat will feature interactive reply buttons:
+- 🔘 **[🔍 Scan 15M Entries]**: Triggers an instant live market scan across all pairs for Fib & Candlestick triggers.
+- 🔘 **[📊 4H Market Structure]**: Dispatches a full breakdown of HH/HL/LH/LL swings and trend bias.
+- 🔘 **[📐 Active Fib Zones]**: Lists the active 50%–61.8% Golden Zone levels for every pair.
+- 🔘 **[📰 Macro News]**: Fetches the latest high-impact economic news headlines.
+- 🔘 **[ℹ️ Bot Status]**: Reports uptime, pairs, next 4H candle close countdown.
+- Text commands supported: `/menu`, `/scan`, `/structure`, `/fibs`, `/news`, `/status`.
 
 ---
 
-## 🎯 Implemented LDE Rules & Upgrades
-1. **Liquidity Sweep**: Detects when prior swing highs/lows are pierced and rejected within the lookback window.
-2. **Displacement**: Requires 1–3 sharp candles with $\ge 70\%$ body-to-range ratio and volume/expansion exceeding baseline.
-3. **Engulfing Confirmation**: Requires clear directional engulfing candle close.
-4. **Closed-Candle Evaluation**: Signals only trigger on completed candles to prevent repainting.
-5. **Deduplication Engine**: Prevents duplicate spam alerts for the same candle on higher timeframes (1H, 4H, 1D).
-6. **Fair Value Gap (FVG)**: Automatically detects and displays 3-candle imbalances when present.
-7. **Fibonacci Zone**: Highlights when entry falls into the 0.50–0.718 discount/premium zone.
-8. **Trade Metrics**: Automatically calculates Entry, Stop Loss, and 1:3 Take Profit targets.
+## 🎯 Implemented Price Action Rules
+1. **Fractal Extrema:** Swings detected using N-bar peak & trough detection on closed candles.
+2. **Chronological Structure:** Classifies each swing into HH, HL, LH, LL to confirm structural trend.
+3. **Golden Pocket Retracement:** 50.0% and 61.8% Fibonacci zones calculated from active swing leg.
+4. **Candlestick Rejections:** Pin Bars (Hammer/Shooting Star), Engulfing, and Morning/Evening Stars.
+5. **No Lagging Indicators:** Pure price action derived strictly from OHLC candle prices.
+6. **Risk Management:** Strict 1:1.5R (TP1) and 1:3.0R (TP2) targets with Stop Loss set past the wick.
