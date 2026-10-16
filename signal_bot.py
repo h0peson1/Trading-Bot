@@ -84,12 +84,7 @@ def get_persistent_keyboard() -> dict:
     return {
         "keyboard": [
             [
-                {"text": "🔍 Scan 15M Entries"},
-                {"text": "📊 4H Market Structure"},
-            ],
-            [
-                {"text": "📐 Active Fib Zones"},
-                {"text": "📰 Macro News"},
+                {"text": "🔍 Scan for Signals"},
                 {"text": "ℹ️ Bot Status"},
             ],
         ],
@@ -150,19 +145,12 @@ def send_telegram(message: str, with_keyboard: bool = False) -> bool:
 
 
 def send_startup_banner():
-    """Send startup banner detailing the Axiory Price Action strategy and buttons."""
-    next_close = get_next_4h_close_utc()
-    countdown = get_time_until_next_4h_close()
+    """Send clean startup confirmation."""
     msg = (
-        f"🟢 <b>AXIORY PRICE ACTION SIGNAL BOT IS LIVE!</b>\n\n"
-        f"• <b>Core Methodology:</b> Pure Price Action (Axiory Advanced Guide)\n"
-        f"• <b>Higher Timeframe (4H):</b> Market Structure (HH, HL, LH, LL) & 50%–61.8% Fib Zones\n"
-        f"• <b>Execution Timeframe (15m):</b> Pin Bar, Engulfing, & Morning/Evening Star Rejections\n"
-        f"• <b>Risk/Reward Ratio:</b> 1:1.5 (TP1 scale 50% & BE) ➔ <b>1:3.0+ (TP2 Target)</b>\n"
-        f"• <b>No Lagging Indicators:</b> 100% Raw Price Action\n"
-        f"• <b>Next 4H Candle Close:</b> {next_close.strftime('%H:%M UTC')} (in {countdown})\n"
-        f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n\n"
-        f"📱 <i>Control buttons are pinned below! Tap any button anytime from your phone.</i>"
+        f"🟢 <b>Trading Signal Bot Active</b>\n\n"
+        f"• <b>Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
+        f"• <b>Signal Format:</b> Entry, TP, SL, and Reason for trade\n\n"
+        f"<i>Signals will be sent here automatically when entry setups trigger.</i>"
     )
     return send_telegram(msg, with_keyboard=True)
 
@@ -658,15 +646,14 @@ def detect_candlestick_trigger(eval_df: pd.DataFrame, trend_bias: str) -> Option
 # 4-Hour Market Update Dispatcher
 # ---------------------------------------------------------------------------
 def send_4h_market_update(is_startup: bool = False):
-    """Compiles and broadcasts the 4H market structure and Fibonacci overview."""
+    """Compiles and broadcasts the 4H market structure overview."""
     global LAST_4H_DISPATCH_TIME
     now_utc = datetime.now(timezone.utc)
     LAST_4H_DISPATCH_TIME = now_utc.strftime("%Y-%m-%d %H:%M UTC")
 
-    header_title = "INITIAL 4H MARKET BRIEFING" if is_startup else "4-HOUR CANDLE CLOSE & MARKET UPDATE"
     blocks = [
-        f"📊 <b>{header_title}</b>\n"
-        f"<i>Time: {now_utc.strftime('%H:%M UTC')} • Axiory Price Action Strategy</i>\n"
+        f"📊 <b>4-HOUR MARKET STRUCTURE UPDATE</b>\n"
+        f"<i>Time: {now_utc.strftime('%H:%M UTC')}</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     ]
 
@@ -677,31 +664,11 @@ def send_4h_market_update(is_startup: bool = False):
                 continue
             res = analyze_4h_bias(df4)
             HTF_CACHE[ticker] = res  # Cache 4H analysis
-            plan = res["plan"]
             sign = "+" if res["change_pct"] >= 0 else ""
-
-            fib_info = ""
-            if res.get("fibs"):
-                f = res["fibs"]
-                fib_info = (
-                    f"\n• <b>📐 4H Golden Fib Zone:</b> {format_price(f['zone_bottom'])} – {format_price(f['zone_top'])}\n"
-                    f"  - <i>38.2% Minor:</i> {format_price(f['fib382'])}\n"
-                    f"  - <i>Invalidation:</i> {format_price(f['invalidation'])}"
-                )
-
-            tl_info = ""
-            if res.get("trendline_level"):
-                tl_info = f"\n• <b>📈 3rd-Point Trendline:</b> {format_price(res['trendline_level'])}"
 
             block = (
                 f"<b>{name}:</b> {format_price(res['close'])} ({sign}{res['change_pct']:.2f}%) | <b>{res['bias']}</b>\n"
                 f"• <b>Market Structure:</b> {res['explanation']}"
-                f"{fib_info}"
-                f"{tl_info}\n"
-                f"• <b>🎯 Planned Setup:</b> {plan['entry_zone']}\n"
-                f"  - <i>Invalidation (SL):</i> {plan['invalidation_sl']}\n"
-                f"  - <i>Target 1 (TP1):</i> {plan['tp1']}\n"
-                f"  - <i>Target 2 (TP2):</i> {plan['tp2']}"
             )
             blocks.append(block)
         except Exception as e:
@@ -793,29 +760,27 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
         risk = abs(entry - sl)
         tp1 = entry + (risk * config.TP1_RR)
         tp2 = entry + (risk * config.TP2_RR)
-        badge = "🟢 <b>BUY / LONG</b>"
+        badge = "🟢 <b>BUY</b>"
     else:
         sl = sl + buffer
         risk = abs(sl - entry)
         tp1 = entry - (risk * config.TP1_RR)
         tp2 = entry - (risk * config.TP2_RR)
-        badge = "🔴 <b>SELL / SHORT</b>"
+        badge = "🔴 <b>SELL</b>"
 
-    zone_label = "50%–61.8% Golden Fib Zone" if in_fib_zone else "3rd-Point Trendline Support/Resistance"
+    bias_clean = bias.replace("🟢", "").replace("🔴", "").replace("⚪", "").strip()
+    reason = f"{trigger['pattern']} confirmation aligning with {bias_clean} trend"
 
-    scale_pct = int(config.SCALE_TP1_RATIO * 100)
+    tp_text = format_price(tp1)
+    if getattr(config, "TP2_RR", None):
+        tp_text += f" (TP2: {format_price(tp2)})"
+
     alert_text = (
-        f"{config.SIGNAL_PREFIX}\n\n"
-        f"{badge} <b>{symbol_name} (15M Execution)</b>\n"
-        f"• <b>4H Trend Bias:</b> {bias}\n"
-        f"• <b>Confluence Zone:</b> {zone_label}\n"
-        f"• <b>Candlestick Trigger:</b> {trigger['pattern']}\n"
-        f"  <i>Confirmation Detail:</i> {trigger['detail']}\n\n"
-        f"• <b>{entry_label}:</b> {format_price(entry)}\n"
-        f"• <b>Stop Loss:</b> {format_price(sl)} (Risk: {format_price(risk)})\n"
-        f"• <b>🎯 TP1 (1:{config.TP1_RR} — Scale {scale_pct}% & SL to BE):</b> {format_price(tp1)}\n"
-        f"• <b>🎯 TP2 (1:{config.TP2_RR} — Final Target):</b> {format_price(tp2)}\n"
-        f"• <i>Closed 15M Candle:</i> {candle_time}"
+        f"{badge} <b>{symbol_name}</b>\n\n"
+        f"• <b>Entry:</b> {format_price(entry)}\n"
+        f"• <b>TP:</b> {tp_text}\n"
+        f"• <b>SL:</b> {format_price(sl)}\n"
+        f"• <b>Reason for trade:</b> {reason}"
     )
     signals.append(alert_text)
     return signals
@@ -843,50 +808,28 @@ def handle_telegram_updates():
                         text = msg.get("text", "").strip()
                         cmd = text.lower()
 
-                        if "scan 15m" in cmd or cmd in ["/scan", "scan"]:
-                            send_telegram("🔍 <i>Scanning 15-Minute candles for Golden Fib & Candlestick triggers...</i>")
+                        if "scan" in cmd:
+                            send_telegram("🔍 <i>Scanning for trade entries...</i>")
                             run_15m_cycle(is_manual=True)
 
-                        elif "4h market structure" in cmd or cmd in ["/structure", "structure"]:
-                            send_telegram("📊 <i>Compiling 4H pure market structure analysis across all pairs...</i>")
+                        elif "structure" in cmd:
+                            send_telegram("📊 <i>Compiling 4H market structure...</i>")
                             send_4h_market_update()
 
-                        elif "active fib zones" in cmd or cmd in ["/fibs", "fibs"]:
-                            fib_report = ["📐 <b>Active 4H Fibonacci Golden Zones (50%–61.8%)</b>\n━━━━━━━━━━━━━━━━━━━━"]
-                            for name, ticker in config.SYMBOLS.items():
-                                df4 = fetch_candles(ticker, "4h")
-                                if not df4.empty:
-                                    res = analyze_4h_bias(df4)
-                                    f = res.get("fibs", {})
-                                    if f:
-                                        fib_report.append(
-                                            f"<b>{name}:</b> {res['bias']}\n"
-                                            f"• <i>50%–61.8% Zone:</i> {format_price(f['zone_bottom'])} – {format_price(f['zone_top'])}\n"
-                                            f"• <i>Current Price:</i> {format_price(res['close'])}"
-                                        )
-                            send_telegram("\n\n".join(fib_report))
-
-                        elif "macro news" in cmd or cmd in ["/news", "news"]:
+                        elif "news" in cmd:
                             try:
                                 news_msg = fundamentals.fetch_macro_news(limit=5)
                                 send_telegram(f"📰 <b>Latest Macro News:</b>\n{news_msg}")
                             except Exception as e:
                                 send_telegram(f"❌ Error fetching macro news: {e}")
 
-                        elif "status" in cmd or cmd in ["/status", "status"]:
-                            next_close = get_next_4h_close_utc()
-                            countdown = get_time_until_next_4h_close()
+                        elif "status" in cmd:
                             status_msg = (
-                                f"<b>📊 Axiory Price Action Bot Status</b>\n\n"
-                                f"• <b>State:</b> 🟢 Running 24/7\n"
-                                f"• <b>Strategy:</b> Pure Price Action (Market Structure + Fibs)\n"
-                                f"• <b>HTF Schedule:</b> Every 4 Hours on Candle Close\n"
-                                f"• <b>LTF Scanner:</b> 15-Minute Candles (Every {config.SCAN_INTERVAL}s)\n"
-                                f"• <b>Next 4H Candle Close:</b> {next_close.strftime('%H:%M UTC')} (in {countdown})\n"
-                                f"• <b>Last 4H Dispatch:</b> {LAST_4H_DISPATCH_TIME}\n"
-                                f"• <b>15M Cycles Completed:</b> {CYCLE_COUNTER}\n"
-                                f"• <b>Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
-                                f"• <b>Current UTC Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                                f"<b>📊 Bot Status: Active 🟢</b>\n\n"
+                                f"• <b>Monitored Pairs:</b> {', '.join(config.SYMBOLS.keys())}\n"
+                                f"• <b>Scanner:</b> 15-Minute candles (every {config.SCAN_INTERVAL}s)\n"
+                                f"• <b>Format:</b> Clean Signals (Entry, TP, SL, Reason)\n"
+                                f"• <b>Cycles Completed:</b> {CYCLE_COUNTER}"
                             )
                             send_telegram(status_msg)
 
@@ -935,13 +878,7 @@ def run_15m_cycle(is_manual: bool = False):
             send_telegram(sig)
         print(f"[{now_str}] 🚨 Dispatched {len(all_signals)} 15M entry alert(s)!")
     elif is_manual:
-        countdown = get_time_until_next_4h_close()
-        manual_msg = (
-            f"🔍 <b>15-Minute Scan Complete (Manual Check)</b>\n\n"
-            f"• <b>Pairs Checked:</b> {len(config.SYMBOLS)} pairs\n"
-            f"• <b>Result:</b> No Golden Fib or Candlestick triggers on recent closed 15m candles.\n"
-            f"• <b>Next 4H Update:</b> In {countdown}"
-        )
+        manual_msg = "🔍 <b>Scan Complete:</b> No active trade entries found at this moment."
         send_telegram(manual_msg)
 
 
@@ -972,9 +909,19 @@ def main():
     # Send startup welcome banner with persistent keyboard
     send_startup_banner()
 
-    # Dispatch initial 4H market overview so user has immediate briefing
+    # Cache initial 4H market overview in background
     LAST_4H_SLOT = get_current_4h_slot_key()
-    send_4h_market_update(is_startup=True)
+    print("  [>] Caching initial 4H market structure in background...")
+    for name, ticker in config.SYMBOLS.items():
+        try:
+            df4 = fetch_candles(ticker, "4h")
+            if not df4.empty:
+                HTF_CACHE[ticker] = analyze_4h_bias(df4)
+        except Exception as e:
+            print(f"Error caching 4H for {name}: {e}")
+
+    if getattr(config, "SEND_4H_BRIEFING", False):
+        send_4h_market_update(is_startup=True)
 
     if args.once:
         run_15m_cycle(is_manual=True)
@@ -985,9 +932,17 @@ def main():
             # 1. Check if a 4-hour candle has closed
             current_slot = get_current_4h_slot_key()
             if current_slot != LAST_4H_SLOT:
-                print(f"\n[>] 4-Hour Candle Close detected for slot {current_slot}! Dispatching 4H market update...")
-                send_4h_market_update()
+                print(f"\n[>] 4-Hour Candle Close detected for slot {current_slot}! Updating 4H cache...")
+                for name, ticker in config.SYMBOLS.items():
+                    try:
+                        df4 = fetch_candles(ticker, "4h")
+                        if not df4.empty:
+                            HTF_CACHE[ticker] = analyze_4h_bias(df4)
+                    except Exception as e:
+                        print(f"Error caching 4H for {name}: {e}")
                 LAST_4H_SLOT = current_slot
+                if getattr(config, "SEND_4H_BRIEFING", False):
+                    send_4h_market_update()
 
             # 2. Run 15m entry scan across all pairs
             run_15m_cycle()

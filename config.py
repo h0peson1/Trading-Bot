@@ -59,5 +59,6 @@ TP1_RR = 0.9                       # High-probability primary target (scale 65% 
 TP2_RR = 2.0                       # Secondary structural runner target
 SCALE_TP1_RATIO = 0.65             # Bank 65% of position at TP1
 
-# Telegram message prefix
+# Telegram notification preferences
+SEND_4H_BRIEFING = False           # Set True only if 4H market structure updates are desired (default False for signal-only)
 SIGNAL_PREFIX = "📊 Axiory Price Action Alert"
