@@ -64,4 +64,4 @@ SEND_4H_BRIEFING = False           # Set True only if 4H market structure update
 SIGNAL_PREFIX = "📊 Axiory Price Action Alert"
 
 # Optional Gemini API Key for open-ended conversational AI chat (free from https://aistudio.google.com/)
-GEMINI_API_KEY = None
+GEMINI_API_KEY = "AIzaSyCK4yoQgncrtIzPepPjg3B54euIwmJmPdg"

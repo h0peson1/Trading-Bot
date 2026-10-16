@@ -19,32 +19,36 @@ SYSTEM_PROMPT = (
 
 
 def call_gemini_api(user_message: str, user_name: str, api_key: str) -> Optional[str]:
-    """Optional call to Google Gemini free REST API if an API key is provided in config."""
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-        prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
-            f"The trader's name is {user_name}.\n"
-            f"Trader says: \"{user_message}\"\n\n"
-            f"Your response:"
-        )
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": 150,
-                "temperature": 0.7,
-            }
+    """Call Google Gemini free REST API for natural conversational AI."""
+    models_to_try = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-latest"]
+    prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"The trader's name is {user_name}.\n"
+        f"Trader says: \"{user_message}\"\n\n"
+        f"Your response:"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 150,
+            "temperature": 0.7,
         }
-        res = requests.post(url, json=payload, timeout=8)
-        if res.status_code == 200:
-            data = res.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-                if text:
-                    return text
-    except Exception as e:
-        print(f"[Gemini Chat Error]: {e}")
+    }
+    headers = {"Content-Type": "application/json"}
+
+    for model in models_to_try:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            res = requests.post(url, headers=headers, json=payload, timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                    if text:
+                        return text
+        except Exception as e:
+            print(f"[Gemini Chat Error ({model})]: {e}")
     return None
 
 
