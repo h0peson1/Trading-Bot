@@ -1,9 +1,24 @@
 {
+  "include": [
+    "signal_bot.py",
+    "bot_chat.py",
+    "config.py",
+    "fundamentals.py",
+    "backtest/backtest_advanced.py",
+    "backtest/test_axiory_engine.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "backtest/research/**",
+    "backtest/results/**",
+    "backtest/reports/**"
+  ],
   "extraPaths": [
+    ".",
     "backtest",
     "backtest/research"
   ],
-  "exclude": [
-    "**/__pycache__"
-  ]
+  "typeCheckingMode": "off",
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": false
 }
