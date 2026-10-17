@@ -30,6 +30,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple, Dict, Any
 import pandas as pd
 import requests
+import yfinance as yf
 import config
 import fundamentals
 import bot_chat
@@ -235,8 +236,61 @@ HTF_CACHE: Dict[str, dict] = {}
 LAST_API_CALL_TIME = 0.0
 
 
+# Fallback Ticker Mapping for Yahoo Finance
+YF_FALLBACK_MAP = {
+    "BTC/USD": "BTC-USD",
+    "BTCUSD": "BTC-USD",
+    "XAU/USD": "GC=F",
+    "XAUUSD": "GC=F",
+    "EUR/JPY": "EURJPY=X",
+    "EURJPY": "EURJPY=X",
+}
+
+
+def fetch_candles_fallback(ticker: str, interval: str) -> pd.DataFrame:
+    """
+    Automatic backup candle fetcher using Yahoo Finance.
+    Activates seamlessly when Twelve Data API credits are exhausted for the day.
+    """
+    yf_symbol = YF_FALLBACK_MAP.get(ticker, ticker)
+    try:
+        t = yf.Ticker(yf_symbol)
+        if interval == "4h":
+            # Synthesize 4H bars from 1H bars
+            df1 = t.history(period="60d", interval="1h", auto_adjust=True)
+            if df1 is None or df1.empty:
+                return pd.DataFrame()
+            df1 = df1.rename(columns={c: c.lower() for c in df1.columns})
+            df4 = df1.resample("4h").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last"
+            }).dropna()
+            if df4.index.tz is None:
+                df4.index = df4.index.tz_localize("UTC")
+            else:
+                df4.index = df4.index.tz_convert("UTC")
+            return df4[["open", "high", "low", "close"]]
+        else:
+            yf_int = "15m" if interval == "15min" else ("1h" if interval == "1h" else "1d")
+            period = "5d" if yf_int == "15m" else "60d"
+            df = t.history(period=period, interval=yf_int, auto_adjust=True)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df = df.rename(columns={c: c.lower() for c in df.columns})
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+            else:
+                df.index = df.index.tz_convert("UTC")
+            return df[["open", "high", "low", "close"]].dropna()
+    except Exception as e:
+        print(f"  [!] Fallback error fetching {ticker} via Yahoo Finance: {e}")
+        return pd.DataFrame()
+
+
 def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
-    """Fetch recent historical candles from Twelve Data REST API with polite rate pacing."""
+    """Fetch recent historical candles from Twelve Data, with instant automatic fallback."""
     global LAST_API_CALL_TIME
 
     # Respect Twelve Data free tier limits: pace calls by at least 1.5 seconds
@@ -254,6 +308,8 @@ def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
     }
 
     data = None
+    twelve_data_exhausted = False
+
     for attempt in range(2):
         try:
             LAST_API_CALL_TIME = time.time()
@@ -263,26 +319,31 @@ def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
                 timeout=30,
             )
             if resp.status_code == 429:
-                print(f"Rate limited (429) for {ticker}. Waiting 8s before retry...")
-                time.sleep(8)
-                continue
+                twelve_data_exhausted = True
+                break
             resp.raise_for_status()
             data = resp.json()
+            if data and (data.get("code") == 429 or "run out of api credits" in str(data).lower()):
+                twelve_data_exhausted = True
+                break
             break
         except Exception as e:
             if attempt == 0:
-                time.sleep(3)
+                time.sleep(2)
             else:
-                print(f"Error fetching {ticker} ({interval}): {e}")
-                return pd.DataFrame()
+                twelve_data_exhausted = True
 
-    if not data or data.get("status") == "error" or "values" not in data:
-        msg = data.get("message", "Unknown error") if data else "No response"
-        print(f"Twelve Data error for {ticker} ({interval}): {msg}")
+    # If Twelve Data daily limit is reached or errored, switch to backup data provider
+    if twelve_data_exhausted or not data or data.get("status") == "error" or "values" not in data:
+        if getattr(config, "FALLBACK_TO_YFINANCE_ON_429", True):
+            print(f"  [↻] Twelve Data limit reached. Seamlessly fetching {ticker} ({interval}) via Yahoo Finance backup...")
+            return fetch_candles_fallback(ticker, interval)
         return pd.DataFrame()
 
     df = pd.DataFrame(data["values"])
     if df.empty:
+        if getattr(config, "FALLBACK_TO_YFINANCE_ON_429", True):
+            return fetch_candles_fallback(ticker, interval)
         return pd.DataFrame()
 
     # Convert types

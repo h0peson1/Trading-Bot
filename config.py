@@ -81,3 +81,9 @@ SIGNAL_PREFIX = "📊 Axiory Price Action Alert"
 
 # Optional Gemini API Key for open-ended conversational AI chat (free from https://aistudio.google.com/)
 GEMINI_API_KEY = "AIzaSyCK4yoQgncrtIzPepPjg3B54euIwmJmPdg"
+
+# Backup Data Providers (Activated when Twelve Data hits daily limits)
+# CurrencyFreaks API Key: Used for currency exchange reference
+CURRENCYFREAKS_API_KEY = "5169453a84bc4716b7f895edef966ff6"
+# Automatic OHLC Candlestick Fallback: Uses Yahoo Finance (unlimited free 15m and 4H candles)
+FALLBACK_TO_YFINANCE_ON_429 = True
