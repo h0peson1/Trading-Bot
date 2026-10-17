@@ -313,6 +313,47 @@ def fetch_candles_massive(ticker: str, interval: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def fetch_candles_fallback(ticker: str, interval: str) -> pd.DataFrame:
+    """
+    Automatic backup candle fetcher using Yahoo Finance.
+    Activates seamlessly if Massive.com has sparse historical data or is unreachable.
+    """
+    yf_symbol = YF_FALLBACK_MAP.get(ticker, ticker)
+    try:
+        t = yf.Ticker(yf_symbol)
+        if interval == "4h":
+            df1 = t.history(period="60d", interval="1h", auto_adjust=True)
+            if df1 is None or df1.empty:
+                return pd.DataFrame()
+            df1 = df1.rename(columns={c: c.lower() for c in df1.columns})
+            df4 = df1.resample("4h").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last"
+            }).dropna()
+            if df4.index.tz is None:
+                df4.index = df4.index.tz_localize("UTC")
+            else:
+                df4.index = df4.index.tz_convert("UTC")
+            return df4[["open", "high", "low", "close"]]
+        else:
+            yf_int = "15m" if interval == "15min" else ("1h" if interval == "1h" else "1d")
+            period = "5d" if yf_int == "15m" else "60d"
+            df = t.history(period=period, interval=yf_int, auto_adjust=True)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df = df.rename(columns={c: c.lower() for c in df.columns})
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+            else:
+                df.index = df.index.tz_convert("UTC")
+            return df[["open", "high", "low", "close"]].dropna()
+    except Exception as e:
+        print(f"  [!] Fallback error fetching {ticker} via Yahoo Finance: {e}")
+        return pd.DataFrame()
+
+
 def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
     """
     Fetches historical OHLC candles.
