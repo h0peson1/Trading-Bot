@@ -5,7 +5,12 @@ TELEGRAM_BOT_TOKEN = "8837848491:AAHxFS89-WEezZc2CXoc3AojjtS2BCfymQA"
 TELEGRAM_CHAT_ID = "8402561087"   # Admin chat ID (full interactive chat + control)
 ADMIN_CHAT_ID = TELEGRAM_CHAT_ID
 
-# Twelve Data API key (paste your key here)
+# Primary Market Data Provider: Massive.com (Polygon.io Institutional Feed)
+MASSIVE_API_KEY = "6354bXLOB0EX2ioiqC7QWDDskFSfs9pQ"
+POLYGON_API_KEY = MASSIVE_API_KEY
+PRIMARY_DATA_PROVIDER = "massive"
+
+# Twelve Data API key (secondary backup)
 TWELVEDATA_API_KEY = "e498a1660bd547a0b0304ed25ecbcff6"
 
 # Top 3 High-Probability Strategy Universe (Audited & Backtested)
@@ -14,6 +19,16 @@ SYMBOLS = {
     "XAUUSD": "XAU/USD",  # Gold (Core Alpha Engine: +10.22 R, 73.5% WR, 1.76 PF)
     "EURJPY": "EUR/JPY",  # Forex Cross (Steady Trend Diversifier: +4.42 R, 62.8% WR, 1.26 PF)
     "BTCUSD": "BTC/USD",  # Crypto (Macro Bull Trend Driver: +6.43 R, 60.6% WR, 1.47 PF)
+}
+
+# Massive.com (Polygon.io) Ticker Mapping
+MASSIVE_TICKERS = {
+    "XAUUSD": "C:XAUUSD",
+    "EURJPY": "C:EURJPY",
+    "BTCUSD": "X:BTCUSD",
+    "XAU/USD": "C:XAUUSD",
+    "EUR/JPY": "C:EURJPY",
+    "BTC/USD": "X:BTCUSD",
 }
 
 # Timeframe Strategy:

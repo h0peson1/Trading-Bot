@@ -247,113 +247,98 @@ YF_FALLBACK_MAP = {
 }
 
 
-def fetch_candles_fallback(ticker: str, interval: str) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# Data Fetching: Massive.com (Primary) + Yahoo Finance (Fallback)
+# ---------------------------------------------------------------------------
+def fetch_candles_massive(ticker: str, interval: str) -> pd.DataFrame:
     """
-    Automatic backup candle fetcher using Yahoo Finance.
-    Activates seamlessly when Twelve Data API credits are exhausted for the day.
+    Primary candle fetcher using Massive.com (Polygon.io Institutional REST API).
     """
-    yf_symbol = YF_FALLBACK_MAP.get(ticker, ticker)
-    try:
-        t = yf.Ticker(yf_symbol)
-        if interval == "4h":
-            # Synthesize 4H bars from 1H bars
-            df1 = t.history(period="60d", interval="1h", auto_adjust=True)
-            if df1 is None or df1.empty:
-                return pd.DataFrame()
-            df1 = df1.rename(columns={c: c.lower() for c in df1.columns})
-            df4 = df1.resample("4h").agg({
-                "open": "first",
-                "high": "max",
-                "low": "min",
-                "close": "last"
-            }).dropna()
-            if df4.index.tz is None:
-                df4.index = df4.index.tz_localize("UTC")
-            else:
-                df4.index = df4.index.tz_convert("UTC")
-            return df4[["open", "high", "low", "close"]]
-        else:
-            yf_int = "15m" if interval == "15min" else ("1h" if interval == "1h" else "1d")
-            period = "5d" if yf_int == "15m" else "60d"
-            df = t.history(period=period, interval=yf_int, auto_adjust=True)
-            if df is None or df.empty:
-                return pd.DataFrame()
-            df = df.rename(columns={c: c.lower() for c in df.columns})
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC")
-            else:
-                df.index = df.index.tz_convert("UTC")
-            return df[["open", "high", "low", "close"]].dropna()
-    except Exception as e:
-        print(f"  [!] Fallback error fetching {ticker} via Yahoo Finance: {e}")
+    massive_ticker = getattr(config, "MASSIVE_TICKERS", {}).get(ticker, ticker)
+    api_key = getattr(config, "MASSIVE_API_KEY", "")
+    if not api_key:
         return pd.DataFrame()
+
+    now = datetime.now(timezone.utc)
+    if interval == "15min":
+        start_date = (now - timedelta(days=5)).strftime("%Y-%m-%d")
+        multiplier, timespan = 15, "minute"
+    elif interval == "4h":
+        start_date = (now - timedelta(days=60)).strftime("%Y-%m-%d")
+        multiplier, timespan = 4, "hour"
+    elif interval == "1h":
+        start_date = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        multiplier, timespan = 1, "hour"
+    else:
+        start_date = (now - timedelta(days=365)).strftime("%Y-%m-%d")
+        multiplier, timespan = 1, "day"
+
+    end_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    url = f"https://api.polygon.io/v2/aggs/ticker/{massive_ticker}/range/{multiplier}/{timespan}/{start_date}/{end_date}"
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "limit": 5000,
+        "apiKey": api_key,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=20)
+        if resp.status_code == 200:
+            data = resp.json()
+            results = data.get("results", [])
+            if not results and interval == "4h":
+                # Synthesize 4H from 1H bars if native 4H range returns sparse data
+                url_1h = f"https://api.polygon.io/v2/aggs/ticker/{massive_ticker}/range/1/hour/{start_date}/{end_date}"
+                resp_1h = requests.get(url_1h, params=params, timeout=20)
+                if resp_1h.status_code == 200:
+                    results = resp_1h.json().get("results", [])
+                    if results:
+                        df1 = pd.DataFrame(results)
+                        df1["datetime"] = pd.to_datetime(df1["t"], unit="ms", utc=True)
+                        df1 = df1.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close"}).set_index("datetime")
+                        df4 = df1.resample("4h").agg({
+                            "open": "first", "high": "max", "low": "min", "close": "last"
+                        }).dropna()
+                        return df4[["open", "high", "low", "close"]]
+
+            if results:
+                df = pd.DataFrame(results)
+                df["datetime"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+                df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close"}).set_index("datetime")
+                return df[["open", "high", "low", "close"]].dropna()
+    except Exception as e:
+        print(f"  [!] Error querying Massive.com for {ticker} ({interval}): {e}")
+
+    return pd.DataFrame()
 
 
 def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
-    """Fetch recent historical candles from Twelve Data, with instant automatic fallback."""
-    global LAST_API_CALL_TIME
+    """
+    Fetches historical OHLC candles.
+    Order of execution:
+    1. Primary: Massive.com (Polygon.io)
+    2. Fallback: Yahoo Finance (automatic zero-cost backup)
+    """
+    # 1. Primary: Massive.com
+    if getattr(config, "PRIMARY_DATA_PROVIDER", "massive") == "massive":
+        df_massive = fetch_candles_massive(ticker, interval)
+        if not df_massive.empty and len(df_massive) >= 20:
+            return df_massive
+        # If 4H structure requires longer historical lookback for 100 SMA, fetch from backup
+        if interval == "4h" and len(df_massive) < 100:
+            df_yf = fetch_candles_fallback(ticker, interval)
+            if not df_yf.empty and len(df_yf) >= len(df_massive):
+                return df_yf
+            elif not df_massive.empty:
+                return df_massive
 
-    # Respect Twelve Data free tier limits: pace calls by at least 1.5 seconds
-    elapsed = time.time() - LAST_API_CALL_TIME
-    if elapsed < 1.5:
-        time.sleep(1.5 - elapsed)
+    # 2. Fallback: Yahoo Finance
+    df_fallback = fetch_candles_fallback(ticker, interval)
+    if not df_fallback.empty:
+        return df_fallback
 
-    outputsize = config.TWELVEDATA_OUTPUTSIZE.get(interval, 200)
-    params = {
-        "symbol": ticker,
-        "interval": interval,
-        "outputsize": outputsize,
-        "apikey": config.TWELVEDATA_API_KEY,
-        "timezone": "UTC",
-    }
-
-    data = None
-    twelve_data_exhausted = False
-
-    for attempt in range(2):
-        try:
-            LAST_API_CALL_TIME = time.time()
-            resp = requests.get(
-                "https://api.twelvedata.com/time_series",
-                params=params,
-                timeout=30,
-            )
-            if resp.status_code == 429:
-                twelve_data_exhausted = True
-                break
-            resp.raise_for_status()
-            data = resp.json()
-            if data and (data.get("code") == 429 or "run out of api credits" in str(data).lower()):
-                twelve_data_exhausted = True
-                break
-            break
-        except Exception as e:
-            if attempt == 0:
-                time.sleep(2)
-            else:
-                twelve_data_exhausted = True
-
-    # If Twelve Data daily limit is reached or errored, switch to backup data provider
-    if twelve_data_exhausted or not data or data.get("status") == "error" or "values" not in data:
-        if getattr(config, "FALLBACK_TO_YFINANCE_ON_429", True):
-            print(f"  [↻] Twelve Data limit reached. Seamlessly fetching {ticker} ({interval}) via Yahoo Finance backup...")
-            return fetch_candles_fallback(ticker, interval)
-        return pd.DataFrame()
-
-    df = pd.DataFrame(data["values"])
-    if df.empty:
-        if getattr(config, "FALLBACK_TO_YFINANCE_ON_429", True):
-            return fetch_candles_fallback(ticker, interval)
-        return pd.DataFrame()
-
-    # Convert types
-    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
-    for col in ["open", "high", "low", "close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.sort_values("datetime").set_index("datetime")
-    df = df[["open", "high", "low", "close"]].dropna()
-    return df
+    return pd.DataFrame()
 
 
 def format_price(val: float) -> str:
