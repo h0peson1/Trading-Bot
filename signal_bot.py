@@ -802,12 +802,28 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
     if not (in_fib_zone or near_trendline):
         return signals
 
+    # 1. Peak Session Timing Filter (London Open to London/NY Overlap: 07:00–15:00 UTC)
+    # Proven by backtesting: Gold and Forex suffer high spreads and chop outside this window.
+    # Bitcoin scans 24/7 continuous crypto market.
+    if getattr(config, "ENABLE_SESSION_FILTER", True):
+        is_crypto = (symbol_name == "BTCUSD" and getattr(config, "BTC_24H_TRADING", True))
+        if not is_crypto:
+            now_utc = datetime.now(timezone.utc)
+            if now_utc.hour < config.SESSION_START_UTC or now_utc.hour > config.SESSION_END_UTC:
+                return signals
+
     # Candlestick Confirmation Trigger
     trigger = detect_candlestick_trigger(eval_df, bias)
     if not trigger:
         return signals
 
     alert_direction = trigger["signal"]
+
+    # 2. Asset-Specific Direction Filter: Bitcoin Long-Only (aligned with macro bull trend from backtest)
+    if symbol_name == "BTCUSD" and getattr(config, "BTC_LONG_ONLY", True):
+        if alert_direction != "BUY":
+            return signals
+
     alert_key = (symbol_name, "15m", str(candle_time), alert_direction)
     if alert_key in RECENT_ALERTS:
         return signals
@@ -826,8 +842,12 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
 
     sl = trigger["sl"]
 
-    # Dynamic volatility buffer (0.15% of price)
-    buffer = max(entry * 0.0015, 0.0006)
+    # 3. Dynamic Volatility Buffer (0.15% for Gold/FX, 0.50% for Crypto to absorb noise wicks)
+    if symbol_name == "BTCUSD":
+        buffer = max(entry * getattr(config, "BTC_SL_BUFFER_PCT", 0.005), 10.0)
+    else:
+        buffer = max(entry * 0.0015, 0.0006)
+
     if alert_direction == "BUY":
         sl = sl - buffer
         risk = abs(entry - sl)
@@ -986,7 +1006,19 @@ def run_15m_cycle(is_manual: bool = False, request_chat_id: Optional[Any] = None
             send_telegram(sig)  # Broadcasts to all subscribers!
         print(f"[{now_str}] 🚨 Broadcasted {len(all_signals)} 15M entry alert(s) to all subscribers!")
     elif is_manual and request_chat_id:
-        manual_msg = "🔍 <b>Scan Complete:</b> No active trade entries found at this moment."
+        now_utc = datetime.now(timezone.utc)
+        in_peak = (config.SESSION_START_UTC <= now_utc.hour <= config.SESSION_END_UTC)
+        session_info = (
+            "🟢 Peak Hours Active (07:00–15:00 UTC)"
+            if in_peak
+            else f"🌙 Outside Peak Hours (Current: {now_utc.strftime('%H:%M')} UTC | Peak: 07:00–15:00 UTC for Gold/FX)"
+        )
+        manual_msg = (
+            f"🔍 <b>Scan Complete:</b> No active trade entries found.\n\n"
+            f"• <b>Universe:</b> {', '.join(config.SYMBOLS.keys())}\n"
+            f"• <b>Timing:</b> {session_info}\n"
+            f"• <i>BTCUSD monitored 24/7 (Long-Only); XAUUSD & EURJPY monitored during peak volume (07:00–15:00 UTC).</i>"
+        )
         send_telegram(manual_msg, chat_id=request_chat_id)
 
 

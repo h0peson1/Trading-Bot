@@ -76,3 +76,34 @@ When running `signal_bot.py`, your Telegram chat will feature interactive reply 
 4. **Candlestick Rejections:** Pin Bars (Hammer/Shooting Star), Engulfing, and Morning/Evening Stars.
 5. **No Lagging Indicators:** Pure price action derived strictly from OHLC candle prices.
 6. **Risk Management:** Strict 1:1.5R (TP1) and 1:3.0R (TP2) targets with Stop Loss set past the wick.
+
+---
+
+## 🔬 Institutional Backtesting Suite (`backtest/`)
+
+All backtesting engines, test suites, reports, and performance data are housed in the dedicated [`backtest/`](backtest/) directory:
+
+- **Engine:** [`backtest/backtest_advanced.py`](backtest/backtest_advanced.py) — 3-asset audited production engine (`XAUUSD`, `BTCUSD`, `EURJPY`).
+- **Test Suite:** [`backtest/test_axiory_engine.py`](backtest/test_axiory_engine.py) — 17 automated regression/integration tests (**17/17 Passing**).
+- **Reports:** [`backtest/reports/`](backtest/reports/) — In-depth breakdown reports including [`ADVANCED_BACKTEST_BREAKDOWN.md`](backtest/reports/ADVANCED_BACKTEST_BREAKDOWN.md).
+- **Results:** [`backtest/results/`](backtest/results/) — Full trade ledgers, equity curves, and performance charts.
+
+### Quick Commands
+
+```bash
+# Run the 3-asset production backtest
+python backtest/backtest_advanced.py
+
+# Run with parameter sensitivity stress testing
+python backtest/backtest_advanced.py --sensitivity
+
+# Run the 17-test regression suite
+python backtest/test_axiory_engine.py
+```
+
+### Verified Multi-Asset Performance (2024–2026)
+- **Portfolio Win Rate:** **66.40%** (83 Wins vs 42 Losses)
+- **Net Return:** **+21.07 R** (+35.54% account growth on $10,000 balance)
+- **Profit Factor:** **1.48** | **Max Drawdown:** **8.18%**
+- **Expectancy Retention (Out-of-Sample):** **203%** on unseen 2026 data
+- Detailed guide: [backtest/README.md](backtest/README.md)
