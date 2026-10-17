@@ -764,6 +764,16 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
     - 1:3+ Risk/Reward management
     """
     signals = []
+
+    # 1. Peak Session Timing Filter (London Open to London/NY Overlap: 07:00–15:00 UTC)
+    # Check BEFORE fetching candles to avoid consuming Twelve Data API credits during off-peak hours!
+    if getattr(config, "ENABLE_SESSION_FILTER", True):
+        is_crypto = (symbol_name == "BTCUSD" and getattr(config, "BTC_24H_TRADING", True))
+        if not is_crypto:
+            now_utc = datetime.now(timezone.utc)
+            if now_utc.hour < config.SESSION_START_UTC or now_utc.hour > config.SESSION_END_UTC:
+                return signals
+
     df = fetch_candles(ticker, config.ENTRY_TIMEFRAME)
     if df.empty or len(df) < 15:
         return signals
@@ -801,16 +811,6 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
     # Must be reacting at a key level (Fib Zone or Trendline)
     if not (in_fib_zone or near_trendline):
         return signals
-
-    # 1. Peak Session Timing Filter (London Open to London/NY Overlap: 07:00–15:00 UTC)
-    # Proven by backtesting: Gold and Forex suffer high spreads and chop outside this window.
-    # Bitcoin scans 24/7 continuous crypto market.
-    if getattr(config, "ENABLE_SESSION_FILTER", True):
-        is_crypto = (symbol_name == "BTCUSD" and getattr(config, "BTC_24H_TRADING", True))
-        if not is_crypto:
-            now_utc = datetime.now(timezone.utc)
-            if now_utc.hour < config.SESSION_START_UTC or now_utc.hour > config.SESSION_END_UTC:
-                return signals
 
     # Candlestick Confirmation Trigger
     trigger = detect_candlestick_trigger(eval_df, bias)

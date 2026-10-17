@@ -35,8 +35,14 @@ TWELVEDATA_OUTPUTSIZE = {
 # Update & Polling schedules
 # UPDATE_INTERVAL_HOURS: Sends comprehensive market report after every 4H candle close
 UPDATE_INTERVAL_HOURS = 4
-# SCAN_INTERVAL: Frequency in seconds to check for new closed 15m candles (60s = 1 min)
-SCAN_INTERVAL = 60
+
+# SCAN_INTERVAL: 300 seconds (5 minutes)
+# Quota Math (Target ~500 requests/day on Twelve Data Basic 800 plan):
+# - Peak hours (07:00-15:00 UTC, 8 hrs): 3 pairs x 12 scans/hr x 8 hrs = 288 calls
+# - Off-peak hours (16 hrs): 1 pair (BTC 24/7) x 12 scans/hr x 16 hrs = 192 calls
+# - 4H Candle Structure cache (6 times/day for 3 pairs) = 18 calls
+# Total = 288 + 192 + 18 = 498 calls/day (Leaves 302 credits buffer for manual commands)
+SCAN_INTERVAL = 300
 CHECK_INTERVAL = SCAN_INTERVAL
 
 # Strategy Settings: Axiory Advanced Price Action (70% Target Model)
