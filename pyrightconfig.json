@@ -1,0 +1,9 @@
+{
+  "extraPaths": [
+    "backtest",
+    "backtest/research"
+  ],
+  "exclude": [
+    "**/__pycache__"
+  ]
+}
