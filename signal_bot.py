@@ -248,11 +248,96 @@ YF_FALLBACK_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# Data Fetching: Massive.com (Primary) + Yahoo Finance (Fallback)
+# Data Fetching: Multi-Provider Resilient Pipeline (Twelve Data + YF + Massive)
 # ---------------------------------------------------------------------------
+def is_fresh_data(df: pd.DataFrame, interval: str, max_age_minutes: int = 45) -> bool:
+    """Validates that execution candle data is recent and not stale historical playback."""
+    if df.empty:
+        return False
+    if interval != "15min":
+        return True
+    try:
+        last_dt = df.index[-1]
+        now = datetime.now(timezone.utc)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.tz_localize("UTC")
+        return (now - last_dt) <= timedelta(minutes=max_age_minutes)
+    except Exception:
+        return True
+
+
+TD_KEY_INDEX = 0
+
+
+def get_twelvedata_keys() -> List[str]:
+    """Returns the list of Twelve Data keys in round-robin order."""
+    global TD_KEY_INDEX
+    keys = getattr(config, "TWELVEDATA_API_KEYS", [])
+    if not keys:
+        single = getattr(config, "TWELVEDATA_API_KEY", "")
+        keys = [single] if single else []
+    if not keys:
+        return []
+    start_idx = TD_KEY_INDEX % len(keys)
+    TD_KEY_INDEX += 1
+    return keys[start_idx:] + keys[:start_idx]
+
+
+def fetch_candles_twelvedata(ticker: str, interval: str) -> pd.DataFrame:
+    """Fetch candles from Twelve Data API with rotating multi-key round-robin and instant failover."""
+    global LAST_API_CALL_TIME
+    keys = get_twelvedata_keys()
+    if not keys:
+        return pd.DataFrame()
+
+    outputsize = config.TWELVEDATA_OUTPUTSIZE.get(interval, 200)
+
+    for api_key in keys:
+        elapsed = time.time() - LAST_API_CALL_TIME
+        if elapsed < 1.0:
+            time.sleep(1.0 - elapsed)
+
+        params = {
+            "symbol": ticker,
+            "interval": interval,
+            "outputsize": outputsize,
+            "apikey": api_key,
+            "timezone": "UTC",
+        }
+
+        try:
+            LAST_API_CALL_TIME = time.time()
+            resp = requests.get(
+                "https://api.twelvedata.com/time_series",
+                params=params,
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "ok" and "values" in data:
+                    df = pd.DataFrame(data["values"])
+                    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+                    for col in ["open", "high", "low", "close"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.sort_values("datetime").set_index("datetime")
+                    return df[["open", "high", "low", "close"]].dropna()
+                elif data.get("code") == 429 or "run out of api credits" in str(data).lower():
+                    print(f"  [↻] Twelve Data key (...{api_key[-4:]}) limit reached. Seamlessly trying next key...")
+                    continue
+            elif resp.status_code == 429:
+                print(f"  [↻] Twelve Data key (...{api_key[-4:]}) HTTP 429. Seamlessly trying next key...")
+                continue
+        except Exception as e:
+            print(f"  [!] Twelve Data request error for {ticker} using key (...{api_key[-4:]}): {e}")
+            continue
+
+    return pd.DataFrame()
+
+
 def fetch_candles_massive(ticker: str, interval: str) -> pd.DataFrame:
     """
-    Primary candle fetcher using Massive.com (Polygon.io Institutional REST API).
+    Backup candle fetcher using Massive.com (Polygon.io Institutional REST API).
+    Only returns data if fresh (free tier often delivers delayed end-of-day bars).
     """
     massive_ticker = getattr(config, "MASSIVE_TICKERS", {}).get(ticker, ticker)
     api_key = getattr(config, "MASSIVE_API_KEY", "")
@@ -283,14 +368,13 @@ def fetch_candles_massive(ticker: str, interval: str) -> pd.DataFrame:
     }
 
     try:
-        resp = requests.get(url, params=params, timeout=20)
+        resp = requests.get(url, params=params, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             results = data.get("results", [])
             if not results and interval == "4h":
-                # Synthesize 4H from 1H bars if native 4H range returns sparse data
                 url_1h = f"https://api.polygon.io/v2/aggs/ticker/{massive_ticker}/range/1/hour/{start_date}/{end_date}"
-                resp_1h = requests.get(url_1h, params=params, timeout=20)
+                resp_1h = requests.get(url_1h, params=params, timeout=15)
                 if resp_1h.status_code == 200:
                     results = resp_1h.json().get("results", [])
                     if results:
@@ -306,7 +390,11 @@ def fetch_candles_massive(ticker: str, interval: str) -> pd.DataFrame:
                 df = pd.DataFrame(results)
                 df["datetime"] = pd.to_datetime(df["t"], unit="ms", utc=True)
                 df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close"}).set_index("datetime")
-                return df[["open", "high", "low", "close"]].dropna()
+                df = df[["open", "high", "low", "close"]].dropna()
+                if is_fresh_data(df, interval):
+                    return df
+                else:
+                    return pd.DataFrame()
     except Exception as e:
         print(f"  [!] Error querying Massive.com for {ticker} ({interval}): {e}")
 
@@ -315,8 +403,8 @@ def fetch_candles_massive(ticker: str, interval: str) -> pd.DataFrame:
 
 def fetch_candles_fallback(ticker: str, interval: str) -> pd.DataFrame:
     """
-    Automatic backup candle fetcher using Yahoo Finance.
-    Activates seamlessly if Massive.com has sparse historical data or is unreachable.
+    Backup candle fetcher using Yahoo Finance.
+    Activates seamlessly when Twelve Data API credits are exhausted for the day.
     """
     yf_symbol = YF_FALLBACK_MAP.get(ticker, ticker)
     try:
@@ -356,28 +444,42 @@ def fetch_candles_fallback(ticker: str, interval: str) -> pd.DataFrame:
 
 def fetch_candles(ticker: str, interval: str) -> pd.DataFrame:
     """
-    Fetches historical OHLC candles.
-    Order of execution:
-    1. Primary: Massive.com (Polygon.io)
-    2. Fallback: Yahoo Finance (automatic zero-cost backup)
+    Fetches historical OHLC candles with multi-tier failover and freshness verification.
+    1. Primary: Twelve Data (Real-time live candles)
+    2. Fallback 1: Yahoo Finance (Live backup)
+    3. Fallback 2: Massive.com / Polygon (Historical / backup)
     """
-    # 1. Primary: Massive.com
-    if getattr(config, "PRIMARY_DATA_PROVIDER", "massive") == "massive":
-        df_massive = fetch_candles_massive(ticker, interval)
-        if not df_massive.empty and len(df_massive) >= 20:
-            return df_massive
-        # If 4H structure requires longer historical lookback for 100 SMA, fetch from backup
-        if interval == "4h" and len(df_massive) < 100:
-            df_yf = fetch_candles_fallback(ticker, interval)
-            if not df_yf.empty and len(df_yf) >= len(df_massive):
-                return df_yf
-            elif not df_massive.empty:
-                return df_massive
+    primary = getattr(config, "PRIMARY_DATA_PROVIDER", "twelvedata")
+
+    # 1. Primary Feed Attempt
+    if primary == "twelvedata":
+        df = fetch_candles_twelvedata(ticker, interval)
+        if not df.empty and len(df) >= 20 and is_fresh_data(df, interval):
+            return df
+    elif primary == "massive":
+        df = fetch_candles_massive(ticker, interval)
+        if not df.empty and len(df) >= 20 and is_fresh_data(df, interval):
+            return df
 
     # 2. Fallback: Yahoo Finance
-    df_fallback = fetch_candles_fallback(ticker, interval)
-    if not df_fallback.empty:
-        return df_fallback
+    df_yf = fetch_candles_fallback(ticker, interval)
+    if not df_yf.empty and len(df_yf) >= 15 and is_fresh_data(df_yf, interval):
+        return df_yf
+
+    # 3. Fallback: Massive (Polygon)
+    df_massive = fetch_candles_massive(ticker, interval)
+    if not df_massive.empty and is_fresh_data(df_massive, interval):
+        return df_massive
+
+    # 4. Fallback: Twelve Data (if primary was not twelvedata)
+    if primary != "twelvedata":
+        df_td = fetch_candles_twelvedata(ticker, interval)
+        if not df_td.empty and is_fresh_data(df_td, interval):
+            return df_td
+
+    # 5. Last resort fallback (return Yahoo Finance even if lookback is slightly sparse)
+    if not df_yf.empty:
+        return df_yf
 
     return pd.DataFrame()
 
@@ -869,11 +971,11 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
     curr = df.iloc[-2]
     candle_time = curr.name
 
-    # Hard age filter — ignore candles older than ~25 minutes
+    # Hard age filter — ignore candles older than ~45 minutes
     now = datetime.now(timezone.utc)
     if candle_time.tzinfo is None:
         candle_time = candle_time.tz_localize("UTC")
-    if (now - candle_time) > timedelta(minutes=25):
+    if (now - candle_time) > timedelta(minutes=45):
         return signals
 
     eval_df = df.iloc[:-1]
@@ -1083,6 +1185,8 @@ def run_15m_cycle(is_manual: bool = False, request_chat_id: Optional[Any] = None
 
             # 2. Scan 15m for entries
             sigs = scan_15m_entry(name, ticker, htf_analysis)
+            bias = htf_analysis.get('bias', 'NEUTRAL')
+            print(f"  [{name}] 4H Structure: {bias} | 15M Signals: {len(sigs)}")
             if sigs:
                 all_signals.extend(sigs)
         except Exception as e:

@@ -5,13 +5,20 @@ TELEGRAM_BOT_TOKEN = "8837848491:AAHxFS89-WEezZc2CXoc3AojjtS2BCfymQA"
 TELEGRAM_CHAT_ID = "8402561087"   # Admin chat ID (full interactive chat + control)
 ADMIN_CHAT_ID = TELEGRAM_CHAT_ID
 
-# Primary Market Data Provider: Massive.com (Polygon.io Institutional Feed)
+# Primary Market Data Provider: Twelve Data (Real-time Institutional Candles)
+PRIMARY_DATA_PROVIDER = "twelvedata"
+TWELVEDATA_API_KEYS = [
+    "e498a1660bd547a0b0304ed25ecbcff6",  # Key 1
+    "152ae60aa8504648ab5d1c5fa59b6c8b",  # Key 2
+    "93d29133d7d04787bd9e608dd4ffa2f0",  # Key 3
+    "5b5e95bebb6f47ff8ae914e36711d97f",  # Key 4
+]
+TWELVEDATA_API_KEY = TWELVEDATA_API_KEYS[0]  # Backwards compatibility
+
+# Secondary Backup Data Providers: Massive.com (Polygon.io) & Yahoo Finance
 MASSIVE_API_KEY = "6354bXLOB0EX2ioiqC7QWDDskFSfs9pQ"
 POLYGON_API_KEY = MASSIVE_API_KEY
-PRIMARY_DATA_PROVIDER = "massive"
 
-# Twelve Data API key (secondary backup)
-TWELVEDATA_API_KEY = "e498a1660bd547a0b0304ed25ecbcff6"
 
 # Top 3 High-Probability Strategy Universe (Audited & Backtested)
 # Strictly limited to the 3 profitable assets with positive mathematical expectancy
