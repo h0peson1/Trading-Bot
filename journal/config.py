@@ -31,9 +31,18 @@ JOURNAL_DB_PATH = os.getenv("JOURNAL_DB_PATH", "trading_journal.db")
 JOURNAL_CHARTS_DIR = os.getenv("JOURNAL_CHARTS_DIR", "journal_charts")
 JOURNAL_TIMEZONE = os.getenv("JOURNAL_TIMEZONE", "UTC")
 
-# 0=Monday, 6=Sunday. Default: Sunday (6) at 22:00 UTC
-JOURNAL_WEEKLY_REPORT_DAY = int(os.getenv("JOURNAL_WEEKLY_REPORT_DAY", "6"))
-JOURNAL_WEEKLY_REPORT_HOUR = int(os.getenv("JOURNAL_WEEKLY_REPORT_HOUR", "22"))
+# Scheduled Report Timing (UTC):
+# 1. Friday evening after 10:00 PM UTC (Forex & Metals Market Close)
+JOURNAL_FOREX_REPORT_DAY = int(os.getenv("JOURNAL_FOREX_REPORT_DAY", getattr(project_config, "JOURNAL_FOREX_REPORT_DAY", 4)))
+JOURNAL_FOREX_REPORT_HOUR = int(os.getenv("JOURNAL_FOREX_REPORT_HOUR", getattr(project_config, "JOURNAL_FOREX_REPORT_HOUR", 22)))
+
+# 2. Sunday night 11:00 PM UTC before Monday open (Bitcoin 24/7 Cycle Wrap-up)
+JOURNAL_CRYPTO_REPORT_DAY = int(os.getenv("JOURNAL_CRYPTO_REPORT_DAY", getattr(project_config, "JOURNAL_CRYPTO_REPORT_DAY", 6)))
+JOURNAL_CRYPTO_REPORT_HOUR = int(os.getenv("JOURNAL_CRYPTO_REPORT_HOUR", getattr(project_config, "JOURNAL_CRYPTO_REPORT_HOUR", 23)))
+
+# Legacy / default fallback
+JOURNAL_WEEKLY_REPORT_DAY = JOURNAL_CRYPTO_REPORT_DAY
+JOURNAL_WEEKLY_REPORT_HOUR = JOURNAL_CRYPTO_REPORT_HOUR
 
 # Interval for outcome monitoring scan in seconds
 JOURNAL_OUTCOME_CHECK_INTERVAL = int(os.getenv("JOURNAL_OUTCOME_CHECK_INTERVAL", "300"))

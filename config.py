@@ -13,8 +13,18 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@h0pesontrades")
 # Trading Journal Configuration
 JOURNAL_DB_PATH = os.getenv("JOURNAL_DB_PATH", "trading_journal.db")
 JOURNAL_TIMEZONE = os.getenv("JOURNAL_TIMEZONE", "UTC")
-JOURNAL_WEEKLY_REPORT_DAY = int(os.getenv("JOURNAL_WEEKLY_REPORT_DAY", "6"))   # Sunday
-JOURNAL_WEEKLY_REPORT_HOUR = int(os.getenv("JOURNAL_WEEKLY_REPORT_HOUR", "22")) # 22:00 UTC
+
+# 1. Forex & Commodities (Gold XAUUSD & EURJPY): Friday evening after 10:00 PM UTC (Market Close)
+JOURNAL_FOREX_REPORT_DAY = int(os.getenv("JOURNAL_FOREX_REPORT_DAY", "4"))      # Friday (4)
+JOURNAL_FOREX_REPORT_HOUR = int(os.getenv("JOURNAL_FOREX_REPORT_HOUR", "22"))   # 22:00 UTC (10:00 PM)
+
+# 2. Crypto (Bitcoin BTCUSD 24/7): Sunday night at 11:00 PM UTC before Monday open
+JOURNAL_CRYPTO_REPORT_DAY = int(os.getenv("JOURNAL_CRYPTO_REPORT_DAY", "6"))     # Sunday (6)
+JOURNAL_CRYPTO_REPORT_HOUR = int(os.getenv("JOURNAL_CRYPTO_REPORT_HOUR", "23"))   # 23:00 UTC (11:00 PM)
+
+# Legacy fallback
+JOURNAL_WEEKLY_REPORT_DAY = JOURNAL_CRYPTO_REPORT_DAY
+JOURNAL_WEEKLY_REPORT_HOUR = JOURNAL_CRYPTO_REPORT_HOUR
 
 # Primary Market Data Provider: Twelve Data (Real-time Institutional Candles)
 PRIMARY_DATA_PROVIDER = "twelvedata"

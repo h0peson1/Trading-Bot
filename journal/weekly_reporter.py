@@ -15,6 +15,10 @@ from .config import (
     JOURNAL_TIMEZONE,
     JOURNAL_WEEKLY_REPORT_DAY,
     JOURNAL_WEEKLY_REPORT_HOUR,
+    JOURNAL_FOREX_REPORT_DAY,
+    JOURNAL_FOREX_REPORT_HOUR,
+    JOURNAL_CRYPTO_REPORT_DAY,
+    JOURNAL_CRYPTO_REPORT_HOUR,
 )
 
 logger = logging.getLogger("journal.weekly")
@@ -159,13 +163,20 @@ def build_weekly_report_text(
     tz_str: str,
     report_id: str,
     signals: List[JournalEntry],
+    title: str = "WEEKLY TRADING JOURNAL AUDIT",
+    scope_note: Optional[str] = None,
 ) -> str:
     """Formats the weekly summary into an HTML Telegram publication."""
     lines = [
-        f"📅 <b>WEEKLY TRADING JOURNAL AUDIT</b>",
+        f"📅 <b>{title}</b>",
         f"━━━━━━━━━━━━━━━━━━━━",
         f"🆔 <b>Report ID:</b> <code>{report_id}</code>",
         f"🗓 <b>Period:</b> {period_start_str} to {period_end_str} ({tz_str})",
+    ]
+    if scope_note:
+        lines.append(f"📌 <b>Scope:</b> <i>{scope_note}</i>")
+
+    lines.extend([
         f"",
         f"<b>1. Signal & Activity Volume:</b>",
         f"• <b>Total Signals Generated:</b> {metrics['total_signals']}",
@@ -173,7 +184,7 @@ def build_weekly_report_text(
         f"• <b>Expired (Unfilled Limits):</b> {metrics['expired']}",
         f"",
         f"<b>2. Instrument Breakdown:</b>",
-    ]
+    ])
 
     for sym, counts in metrics["by_instrument"].items():
         lines.append(f"• <b>{sym}:</b> {counts['TOTAL']} signals (BUY: {counts.get('BUY', 0)}, SELL: {counts.get('SELL', 0)})")
@@ -212,7 +223,7 @@ class WeeklyReporter:
 
     def run_weekly_report_cycle(self, target_dt: Optional[datetime] = None, force: bool = False) -> bool:
         """
-        Compiles and dispatches the weekly performance summary if due and not yet sent.
+        Compiles and dispatches the standard weekly performance summary if due and not yet sent.
         Guarantees that each weekly period is published only once logically.
         """
         start_dt, end_dt, year, week_num, report_id = get_reporting_week_bounds(target_dt)
@@ -232,12 +243,11 @@ class WeeklyReporter:
             tz_str=JOURNAL_TIMEZONE,
             report_id=report_id,
             signals=signals,
+            title="WEEKLY TRADING JOURNAL AUDIT",
         )
 
-        # Dispatch to channel via publisher
         msg_id = self.publisher.publish_text(report_text)
 
-        # Persist report to guarantee duplicate prevention across restarts
         self.db.record_weekly_report(
             report_id=report_id,
             year=year,
@@ -251,11 +261,121 @@ class WeeklyReporter:
         logger.info(f"[Weekly Reporter]: Report {report_id} published and recorded successfully.")
         return True
 
+    def run_forex_metals_report(self, target_dt: Optional[datetime] = None, force: bool = False) -> bool:
+        """
+        Compiles and dispatches Friday evening (after 10:00 PM UTC) journal report for Forex & Metals (XAUUSD & EURJPY).
+        Covers the trading week through market close Friday 22:00 UTC.
+        """
+        if target_dt is None:
+            target_dt = datetime.now(timezone.utc)
+        elif target_dt.tzinfo is None:
+            target_dt = target_dt.replace(tzinfo=timezone.utc)
+
+        monday = target_dt.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=target_dt.weekday())
+        start_dt = monday
+        end_dt = monday + timedelta(days=4, hours=22)  # Friday 22:00:00 UTC
+        year, week_num, _ = start_dt.isocalendar()
+        report_id = f"REPORT-{year}-W{week_num:02d}-FOREX_METALS"
+
+        if not force and self.db.is_weekly_report_published(report_id):
+            logger.info(f"[Weekly Reporter]: Forex/Metals Report {report_id} already published. Skipping duplicate.")
+            return False
+
+        all_signals = self.db.get_signals_for_period(start_dt.isoformat(), end_dt.isoformat())
+        forex_signals = [s for s in all_signals if s.symbol in ["XAUUSD", "EURJPY"]]
+        metrics = calculate_weekly_metrics(forex_signals)
+
+        report_text = build_weekly_report_text(
+            metrics=metrics,
+            period_start_str=start_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            period_end_str=end_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            tz_str=JOURNAL_TIMEZONE,
+            report_id=report_id,
+            signals=forex_signals,
+            title="WEEKLY FOREX & METALS JOURNAL AUDIT (Gold & EURJPY)",
+            scope_note="Closed trading week for Gold (XAUUSD) & EURJPY — Market closed for weekend.",
+        )
+
+        msg_id = self.publisher.publish_text(report_text)
+
+        self.db.record_weekly_report(
+            report_id=report_id,
+            year=year,
+            week_number=week_num,
+            period_start=start_dt.isoformat(),
+            period_end=end_dt.isoformat(),
+            timezone=JOURNAL_TIMEZONE,
+            report_content=report_text,
+            telegram_message_id=msg_id,
+        )
+        logger.info(f"[Weekly Reporter]: Forex/Metals Report {report_id} published successfully.")
+        return True
+
+    def run_crypto_weekly_report(self, target_dt: Optional[datetime] = None, force: bool = False) -> bool:
+        """
+        Compiles and dispatches Sunday night (11:00 PM UTC) journal report for Bitcoin (BTCUSD 24/7).
+        Covers the complete 7-day cycle through Sunday 23:00 UTC before Monday open.
+        """
+        if target_dt is None:
+            target_dt = datetime.now(timezone.utc)
+        elif target_dt.tzinfo is None:
+            target_dt = target_dt.replace(tzinfo=timezone.utc)
+
+        monday = target_dt.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=target_dt.weekday())
+        start_dt = monday
+        end_dt = monday + timedelta(days=6, hours=23)  # Sunday 23:00:00 UTC
+        year, week_num, _ = start_dt.isocalendar()
+        report_id = f"REPORT-{year}-W{week_num:02d}-BTC"
+
+        if not force and self.db.is_weekly_report_published(report_id):
+            logger.info(f"[Weekly Reporter]: Bitcoin Report {report_id} already published. Skipping duplicate.")
+            return False
+
+        all_signals = self.db.get_signals_for_period(start_dt.isoformat(), end_dt.isoformat())
+        btc_signals = [s for s in all_signals if s.symbol == "BTCUSD"]
+        metrics = calculate_weekly_metrics(btc_signals)
+
+        report_text = build_weekly_report_text(
+            metrics=metrics,
+            period_start_str=start_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            period_end_str=end_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            tz_str=JOURNAL_TIMEZONE,
+            report_id=report_id,
+            signals=btc_signals,
+            title="WEEKLY BITCOIN (BTCUSD) JOURNAL AUDIT",
+            scope_note="Complete 7-day 24/7 Bitcoin cycle — Dispatched Sunday 11:00 PM UTC before Monday open.",
+        )
+
+        msg_id = self.publisher.publish_text(report_text)
+
+        self.db.record_weekly_report(
+            report_id=report_id,
+            year=year,
+            week_number=week_num,
+            period_start=start_dt.isoformat(),
+            period_end=end_dt.isoformat(),
+            timezone=JOURNAL_TIMEZONE,
+            report_content=report_text,
+            telegram_message_id=msg_id,
+        )
+        logger.info(f"[Weekly Reporter]: Bitcoin Report {report_id} published successfully.")
+        return True
+
     def check_and_publish_if_scheduled(self, now: Optional[datetime] = None):
-        """Checks if current time matches scheduled day and hour."""
+        """
+        Automated schedule checker:
+        1. Friday evening after 10:00 PM UTC (22:00) -> Dispatches Forex & Metals (Gold/EURJPY) Weekly Audit
+        2. Sunday night at 11:00 PM UTC (23:00) before Monday -> Dispatches Bitcoin (BTCUSD) Weekly Audit
+        """
         if now is None:
             now = datetime.now(timezone.utc)
-        
-        # Check day of week and hour
-        if now.weekday() == JOURNAL_WEEKLY_REPORT_DAY and now.hour == JOURNAL_WEEKLY_REPORT_HOUR:
-            self.run_weekly_report_cycle(target_dt=now, force=False)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+
+        # 1. Friday Forex & Metals check (Friday after 22:00 UTC)
+        if now.weekday() == JOURNAL_FOREX_REPORT_DAY and now.hour == JOURNAL_FOREX_REPORT_HOUR:
+            self.run_forex_metals_report(target_dt=now, force=False)
+
+        # 2. Sunday Bitcoin check (Sunday at 23:00 UTC before Monday open)
+        if now.weekday() == JOURNAL_CRYPTO_REPORT_DAY and now.hour == JOURNAL_CRYPTO_REPORT_HOUR:
+            self.run_crypto_weekly_report(target_dt=now, force=False)
