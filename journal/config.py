@@ -20,7 +20,11 @@ def get_telegram_channel_id() -> Optional[str]:
     if channel_id and channel_id.strip():
         return channel_id.strip()
     cid = getattr(project_config, "TELEGRAM_CHANNEL_ID", None)
-    return str(cid).strip() if cid else None
+    if cid and str(cid).strip():
+        return str(cid).strip()
+    # Fallback to Admin Chat ID so journal reports & trade updates are always delivered
+    admin_id = getattr(project_config, "ADMIN_CHAT_ID", getattr(project_config, "TELEGRAM_CHAT_ID", None))
+    return str(admin_id).strip() if admin_id else None
 
 
 JOURNAL_DB_PATH = os.getenv("JOURNAL_DB_PATH", "trading_journal.db")

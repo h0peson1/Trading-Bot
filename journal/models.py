@@ -61,6 +61,17 @@ class SignalPayload:
     signal_id: Optional[str] = None
 
     def __post_init__(self):
+        # Coerce strings or pandas Timestamps to python datetime
+        if isinstance(self.candle_time, str):
+            self.candle_time = datetime.fromisoformat(self.candle_time.replace("Z", "+00:00"))
+        elif hasattr(self.candle_time, "to_pydatetime"):
+            self.candle_time = self.candle_time.to_pydatetime()
+
+        if isinstance(self.signal_timestamp, str):
+            self.signal_timestamp = datetime.fromisoformat(self.signal_timestamp.replace("Z", "+00:00"))
+        elif hasattr(self.signal_timestamp, "to_pydatetime"):
+            self.signal_timestamp = self.signal_timestamp.to_pydatetime()
+
         # 1. candle_time (timestamp of the confirmation candle)
         if self.candle_time is None and self.signal_timestamp is not None:
             self.candle_time = self.signal_timestamp
