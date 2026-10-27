@@ -8,7 +8,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8402561087")   # Admin chat ID
 ADMIN_CHAT_ID = TELEGRAM_CHAT_ID
 
 # Dedicated Private Telegram Channel for Trading Journal
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", None)
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@h0pesontrades")
 
 # Trading Journal Configuration
 JOURNAL_DB_PATH = os.getenv("JOURNAL_DB_PATH", "trading_journal.db")
