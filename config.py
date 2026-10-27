@@ -1,9 +1,20 @@
+import os
+
 # Trading Signal Bot Configuration
 # Signal-only — no broker or MetaTrader required
 
-TELEGRAM_BOT_TOKEN = "8837848491:AAHxFS89-WEezZc2CXoc3AojjtS2BCfymQA"
-TELEGRAM_CHAT_ID = "8402561087"   # Admin chat ID (full interactive chat + control)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8837848491:AAHxFS89-WEezZc2CXoc3AojjtS2BCfymQA")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8402561087")   # Admin chat ID (full interactive chat + control)
 ADMIN_CHAT_ID = TELEGRAM_CHAT_ID
+
+# Dedicated Private Telegram Channel for Trading Journal
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", None)
+
+# Trading Journal Configuration
+JOURNAL_DB_PATH = os.getenv("JOURNAL_DB_PATH", "trading_journal.db")
+JOURNAL_TIMEZONE = os.getenv("JOURNAL_TIMEZONE", "UTC")
+JOURNAL_WEEKLY_REPORT_DAY = int(os.getenv("JOURNAL_WEEKLY_REPORT_DAY", "6"))   # Sunday
+JOURNAL_WEEKLY_REPORT_HOUR = int(os.getenv("JOURNAL_WEEKLY_REPORT_HOUR", "22")) # 22:00 UTC
 
 # Primary Market Data Provider: Twelve Data (Real-time Institutional Candles)
 PRIMARY_DATA_PROVIDER = "twelvedata"

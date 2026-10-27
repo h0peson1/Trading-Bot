@@ -1065,6 +1065,38 @@ def scan_15m_entry(symbol_name: str, ticker: str, htf_analysis: dict) -> list:
         f"• <b>Reason for trade:</b> {reason}"
     )
     signals.append(alert_text)
+
+    # Isolated Trading Journal Hook (Auditing & Journaling Only - Non-blocking, failsafe)
+    try:
+        from journal import SignalPayload, get_journal_service
+        payload = SignalPayload(
+            symbol=symbol_name,
+            ticker=ticker,
+            direction=alert_direction,
+            entry_price=entry,
+            stop_loss=sl,
+            take_profit_1=tp1,
+            take_profit_2=tp2 if getattr(config, "TP2_RR", None) else None,
+            strategy_id="Axiory Price Action",
+            execution_timeframe=config.ENTRY_TIMEFRAME,
+            analysis_timeframe=config.HTF_TIMEFRAME,
+            signal_timestamp=candle_time,
+            entry_mode=config.ENTRY_MODE,
+            pattern=trigger.get("pattern"),
+            trend_bias=bias_clean,
+            reason=reason,
+            metadata={
+                "risk": risk,
+                "entry_label": entry_label,
+                "in_fib_zone": in_fib_zone,
+                "near_trendline": near_trendline,
+            }
+        )
+        journal_service = get_journal_service(fetch_candles_fn=fetch_candles)
+        journal_service.record_signal(payload=payload, ohlc_df=df)
+    except Exception as journal_err:
+        print(f"[Journal Hook Notice (Non-Fatal)]: {journal_err}")
+
     return signals
 
 
@@ -1126,6 +1158,17 @@ def handle_telegram_updates():
                                     f"• <b>Cycles Completed:</b> {CYCLE_COUNTER}"
                                 )
                                 send_telegram(status_msg, chat_id=chat_id, with_keyboard=True)
+
+                            elif "journal" in cmd or "report" in cmd:
+                                try:
+                                    from journal import get_journal_service
+                                    service = get_journal_service(fetch_candles_fn=fetch_candles)
+                                    send_telegram("📖 <i>Compiling and publishing weekly journal audit report to channel...</i>", chat_id=chat_id)
+                                    sent = service.trigger_weekly_report(force=True)
+                                    msg = "✅ Weekly Journal Report published to dedicated channel." if sent else "ℹ️ Report already up to date."
+                                    send_telegram(msg, chat_id=chat_id)
+                                except Exception as j_err:
+                                    send_telegram(f"❌ Journal Report Error: {j_err}", chat_id=chat_id)
 
                             elif cmd in ["/start", "/menu", "menu", "help"]:
                                 send_startup_banner(target_chat_id=chat_id)
@@ -1239,6 +1282,14 @@ def main():
 
     # Send startup welcome banner with persistent keyboard
     send_startup_banner()
+
+    # Initialize Audited Trading Journal Service (SQLite + Private Channel Publisher)
+    try:
+        from journal import get_journal_service
+        get_journal_service(fetch_candles_fn=fetch_candles)
+        print("  [✓] Audited Trading Journal Service active (SQLite + Channel Publisher).")
+    except Exception as j_init_err:
+        print(f"  [!] Journal initialization notice: {j_init_err}")
 
     # Cache initial 4H market overview in background
     LAST_4H_SLOT = get_current_4h_slot_key()

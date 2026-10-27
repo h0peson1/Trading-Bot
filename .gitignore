@@ -8,6 +8,9 @@ build/
 
 # Data files
 *.csv
+*.db
+trading_journal.db*
+journal_charts/
 
 # Environment
 .env
